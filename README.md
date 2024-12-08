@@ -7,6 +7,7 @@ This Python application provides a graphical interface for downloading and manag
 - **Profile Management:** Add, edit, or delete webnovel profiles with details like URL, title, and author.
 - **Chapter Preview:** Fetch and display chapters, highlighting new chapters since last fetch.
 - **EPUB Creation:** Convert selected chapters into an EPUB file with customizable metadata.
+- **EDIT:** The Kemono_Webnovel_Downloader.py will only fetch up to 50 chapters. The Kemono_Webnovel_Downloader_More_Chapters.py will fetch all chapters.
 
 ## Prerequisites
 
@@ -21,5 +22,3 @@ To install the required packages, run:
 
 ```bash
 pip install requests ebooklib
-
-EDIT: The Kemono_Webnovel_Downloader.py will only fetch up to 50 chapters. The Kemono_Webnovel_Downloader_More_Chapters.py will fetch all chapters.
