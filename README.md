@@ -22,4 +22,4 @@ To install the required packages, run:
 ```bash
 pip install requests ebooklib
 
-**EDIT: The Kemono_Webnovel_Downloader.py will only fetch up to 50 chapters. The Kemono_Webnovel_Downloader_More_Chapters.py will fetch all chapters.
+EDIT: The Kemono_Webnovel_Downloader.py will only fetch up to 50 chapters. The Kemono_Webnovel_Downloader_More_Chapters.py will fetch all chapters.
