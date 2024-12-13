@@ -23,10 +23,12 @@ class KemonoWebnovelDownloader(tk.Tk):
         self.style.map("Treeview", background=[('selected', '#3470e6')])
 
         self.profiles = self.load_profiles()
+        self.profile_directories = {}  # New dictionary to store custom directories
         self.output_directory = os.getcwd()
 
         self.is_fetching = False
         self.stop_fetching = threading.Event()
+        self.paginate_chapters = tk.BooleanVar(value=False)  # New variable for pagination toggle
 
         self.setup_ui()
 
@@ -46,6 +48,12 @@ class KemonoWebnovelDownloader(tk.Tk):
         self.profile_list.pack(fill=tk.BOTH, expand=True, padx=5, pady=(5, 0))
 
         self.profile_list.bind('<Button-1>', self.on_treeview_click)
+
+        # Pagination toggle checkbox
+        self.pagination_checkbox = ttk.Checkbutton(
+            main_frame, text="Fetch all chapters (will take longer)", variable=self.paginate_chapters
+        )
+        self.pagination_checkbox.pack(anchor=tk.W, pady=5)
 
         # Buttons
         button_frame = ttk.Frame(main_frame)
@@ -101,7 +109,7 @@ class KemonoWebnovelDownloader(tk.Tk):
                     if self.stop_fetching.is_set():
                         return
 
-                    paginated_url = f"{feed_url}?o={offset}"
+                    paginated_url = f"{feed_url}?o={offset}" if self.paginate_chapters.get() else feed_url
                     for attempt in range(max_retries + 1):
                         if self.stop_fetching.is_set():
                             return
@@ -110,12 +118,20 @@ class KemonoWebnovelDownloader(tk.Tk):
                             response = requests.get(paginated_url)
                             response.raise_for_status()
                             data = response.json()
-                            if not data:  # Assuming an empty response indicates no more chapters
+                            
+                            if not data:  # Stop if no data returned
                                 self.chapters_fetched(all_chapters)
                                 return
+
                             all_chapters.extend(data)
+
+                            if not self.paginate_chapters.get():  # If pagination is disabled, stop after the first fetch
+                                self.chapters_fetched(all_chapters)
+                                return
+
                             offset += 50  # Increment by 50 for the next batch of chapters
                             break  # Successful fetch, move to next batch
+
                         except requests.exceptions.RequestException as e:
                             if attempt == max_retries or self.stop_fetching.is_set():
                                 self.chapters_error(f"Failed to fetch chapters after {max_retries} retries: {e}")
@@ -153,7 +169,7 @@ class KemonoWebnovelDownloader(tk.Tk):
         frame = ttk.Frame(popup, padding="5")
         frame.pack(fill=tk.BOTH, expand=True)
 
-        label = ttk.Label(frame, text="This might take a minute...")
+        label = ttk.Label(frame, text="This might take a while...")
         label.pack(pady=5)
 
         def cancel_fetch():
@@ -173,7 +189,7 @@ class KemonoWebnovelDownloader(tk.Tk):
         popup.protocol("WM_DELETE_WINDOW", cancel_fetch)
         return popup
 
-    def create_epub(self, chapters, title, author, directory, filename):
+    def create_epub(self, chapters, title, author, profile_url, filename):
         chapters = sorted(chapters, key=lambda x: x['published'])
         
         book = epub.EpubBook()
@@ -196,6 +212,7 @@ class KemonoWebnovelDownloader(tk.Tk):
         book.add_item(epub.EpubNav())
         book.spine = ['nav'] + epub_chapters
 
+        directory = self.profiles[profile_url].get('directory', self.output_directory)  # Use profile-specific directory
         filename = f"{self.sanitize_filename(filename)}.epub"
         filepath = os.path.join(directory, filename)
         epub.write_epub(filepath, book)
@@ -204,18 +221,30 @@ class KemonoWebnovelDownloader(tk.Tk):
     def load_profiles(self):
         try:
             with open("profiles.json", "r") as file:
-                return json.load(file)
+                data = json.load(file)
+                for url, profile in data.items():
+                    # Only update directory if it's not in the JSON
+                    if 'directory' not in profile or not profile['directory']:
+                        profile['directory'] = self.output_directory
+                return data
         except FileNotFoundError:
+            return {}
+        except json.JSONDecodeError as e:
+            print(f"JSON Decode Error: {e}")
+            messagebox.showerror("Error", f"The profiles.json file is not valid JSON. Error: {e}")
             return {}
 
     def save_profiles(self):
+        for url, profile in self.profiles.items():
+            # Ensure directory is included and is string type
+            profile['directory'] = str(profile.get('directory', self.output_directory))
         with open("profiles.json", "w") as file:
             json.dump(self.profiles, file, indent=4)
 
     def add_profile(self):
         add_window = tk.Toplevel(self)
         add_window.title("Add New Profile")
-        add_window.geometry("300x200")
+        add_window.geometry("300x250")  # Increased height for directory field
         
         profile_data = {}
 
@@ -223,6 +252,7 @@ class KemonoWebnovelDownloader(tk.Tk):
             url = profile_data['url'].get()
             title = profile_data['title'].get()
             author = profile_data['author'].get()
+            directory = profile_data['directory'].get() or self.output_directory  # Default to current working directory if not specified
             
             fixed_url = self.fix_link(url)
             if not fixed_url:
@@ -233,7 +263,7 @@ class KemonoWebnovelDownloader(tk.Tk):
                 messagebox.showwarning("Warning", "This profile already exists.")
                 return
             
-            self.profiles[fixed_url] = {"title": title or "Unknown Title", "author": author or "Unknown Author", "last_fetched": ""}
+            self.profiles[fixed_url] = {"title": title or "Unknown Title", "author": author or "Unknown Author", "last_fetched": "", "directory": directory}
             self.update_profile_list()
             self.save_profiles()
             add_window.destroy()
@@ -253,8 +283,13 @@ class KemonoWebnovelDownloader(tk.Tk):
         profile_data['author'] = ttk.Entry(add_window, width=30)
         profile_data['author'].grid(row=2, column=1, padx=5, pady=5)
 
+        # Directory Entry
+        ttk.Label(add_window, text="Directory:").grid(row=3, column=0, sticky="w", padx=5, pady=5)
+        profile_data['directory'] = ttk.Entry(add_window, width=30)
+        profile_data['directory'].grid(row=3, column=1, padx=5, pady=5)
+
         # Submit Button
-        ttk.Button(add_window, text="Submit", command=submit_profile).grid(row=3, column=0, columnspan=2, pady=10)
+        ttk.Button(add_window, text="Submit", command=submit_profile).grid(row=4, column=0, columnspan=2, pady=10)
 
     def edit_profile(self):
         selected = self.profile_list.selection()
@@ -265,7 +300,7 @@ class KemonoWebnovelDownloader(tk.Tk):
         url = self.profile_list.item(selected[0])['values'][2]  # Changed index due to column order
         edit_window = tk.Toplevel(self)
         edit_window.title("Edit Profile")
-        edit_window.geometry("300x200")
+        edit_window.geometry("300x250")  # Increased height for directory field
         
         profile_data = {}
 
@@ -273,11 +308,13 @@ class KemonoWebnovelDownloader(tk.Tk):
         profile_data['url'] = tk.StringVar(value=url)
         profile_data['title'] = tk.StringVar(value=self.profiles[url]['title'])
         profile_data['author'] = tk.StringVar(value=self.profiles[url]['author'])
+        profile_data['directory'] = tk.StringVar(value=self.profiles[url].get('directory', self.output_directory))
 
         def update_profile():
             new_title = profile_data['title'].get()
             new_author = profile_data['author'].get()
             new_url = profile_data['url'].get()
+            new_directory = profile_data['directory'].get() or self.output_directory
             
             new_fixed_url = self.fix_link(new_url)
             if not new_fixed_url:
@@ -292,10 +329,11 @@ class KemonoWebnovelDownloader(tk.Tk):
                 # Remove old profile and add new one
                 last_fetched = self.profiles[url].get("last_fetched", "")
                 del self.profiles[url]  # Remove old profile
-                self.profiles[new_fixed_url] = {"title": new_title, "author": new_author, "last_fetched": last_fetched}
+                self.profiles[new_fixed_url] = {"title": new_title, "author": new_author, "last_fetched": last_fetched, "directory": new_directory}
             else:
                 self.profiles[url]['title'] = new_title
                 self.profiles[url]['author'] = new_author
+                self.profiles[url]['directory'] = new_directory
 
             self.update_profile_list()
             self.save_profiles()
@@ -313,8 +351,12 @@ class KemonoWebnovelDownloader(tk.Tk):
         ttk.Label(edit_window, text="Author:").grid(row=2, column=0, sticky="w", padx=5, pady=5)
         ttk.Entry(edit_window, textvariable=profile_data['author'], width=30).grid(row=2, column=1, padx=5, pady=5)
 
+        # Directory Entry
+        ttk.Label(edit_window, text="Directory:").grid(row=3, column=0, sticky="w", padx=5, pady=5)
+        ttk.Entry(edit_window, textvariable=profile_data['directory'], width=30).grid(row=3, column=1, padx=5, pady=5)
+
         # Update Button
-        ttk.Button(edit_window, text="Update", command=update_profile).grid(row=3, column=0, columnspan=2, pady=10)
+        ttk.Button(edit_window, text="Update", command=update_profile).grid(row=4, column=0, columnspan=2, pady=10)
 
     def delete_profile(self):
         selected = self.profile_list.selection()
@@ -407,7 +449,7 @@ class KemonoWebnovelDownloader(tk.Tk):
                 new_title = metadata_window.title_entry.get()
                 new_author = metadata_window.author_entry.get()
                 new_filename = metadata_window.filename_entry.get()
-                filepath = self.create_epub(selected_chapters, new_title, new_author, self.output_directory, new_filename)
+                filepath = self.create_epub(selected_chapters, new_title, new_author, url, new_filename)
                 messagebox.showinfo("Success", f"EPUB created at: {filepath}")
                 self.profiles[url]["last_fetched"] = max(chap['published'] for chap in selected_chapters)
                 self.save_profiles()
