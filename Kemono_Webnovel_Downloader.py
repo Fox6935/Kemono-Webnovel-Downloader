@@ -2,27 +2,42 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import json
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 from ebooklib import epub
 import re
 import os
+import threading
+import time
 
 class KemonoWebnovelDownloader(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Kemono Webnovel Downloader")
-        self.geometry("800x600")
+        self.geometry("500x500")
         
         self.style = ttk.Style(self)
-        self.style.theme_use("clam")
+        self.style.theme_use("default")
+        self.style.configure("Green.TButton", background="green", padding=6, relief="flat", font=('Helvetica', 10))
         self.style.configure("TButton", padding=6, relief="flat", font=('Helvetica', 10))
         self.style.configure("TFrame", background="#f0f0f0")
         self.style.configure("Treeview", background="#ffffff", foreground="black", fieldbackground="#ffffff")
         self.style.map("Treeview", background=[('selected', '#3470e6')])
 
         self.profiles = self.load_profiles()
+        self.profile_directories = {}  # New dictionary to store custom directories
         self.output_directory = os.getcwd()
 
+        self.is_fetching = False
+        self.stop_fetching = threading.Event()
+        self.paginate_chapters = tk.BooleanVar(value=False)  # New variable for pagination toggle
+        
+        self.automatic_mode_running = False
+        self.timer_paused = False
+        self.timer_start_time = None
+        self.timer_label = None
+        self.automatic_mode = tk.BooleanVar(value=False)
+        self.sleep_time_seconds = 30  # Default to 30 minutes
+        
         self.setup_ui()
 
     def setup_ui(self):
@@ -37,29 +52,179 @@ class KemonoWebnovelDownloader(tk.Tk):
         self.profile_list.column("#0", width=0, stretch=tk.NO)
         self.profile_list.column("Title", anchor=tk.W, width=150)
         self.profile_list.column("Author", anchor=tk.W, width=150)
-        self.profile_list.column("URL", anchor=tk.W, width=200)
+        self.profile_list.column("URL", width=0, stretch=tk.NO)
         self.profile_list.pack(fill=tk.BOTH, expand=True, padx=5, pady=(5, 0))
 
         self.profile_list.bind('<Button-1>', self.on_treeview_click)
+        self.profile_list.bind('<Button-3>', self.show_context_menu)
+        self.profile_list.bind('<<TreeviewSelect>>', self.update_button_state)
+
+        # Pagination toggle checkbox
+        self.pagination_checkbox = ttk.Checkbutton(
+            main_frame, text="Fetch all chapters (will take longer)", variable=self.paginate_chapters
+        )
+        self.pagination_checkbox.pack(anchor=tk.W, pady=5)
 
         # Buttons
         button_frame = ttk.Frame(main_frame)
         button_frame.pack(fill=tk.X, pady=10)
 
-        buttons = [
-            ("Add Profile", self.add_profile),
-            ("Edit Profile", self.edit_profile),
-            ("Delete Profile", self.delete_profile),
-            ("Download Preview", self.preview_chapters)
-        ]
-        for text, command in buttons:
-            ttk.Button(button_frame, text=text, command=command, style="TButton").pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
-
+        ttk.Button(button_frame, text="Add Profile", command=self.add_profile, style="TButton").pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
+        self.download_button = ttk.Button(button_frame, text="Download Preview", command=self.preview_chapters, style="TButton")
+        self.download_button.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
+        
+        # Initially disabled until a profile is selected
+        self.download_button.config(state='disabled')
         self.update_profile_list()
+        
+        # New
+        automatic_frame = ttk.Frame(main_frame)
+        automatic_frame.pack(anchor=tk.W, pady=5)
+        
+        self.automatic_mode_button = ttk.Button(automatic_frame, text="Automatic Mode", command=self.toggle_automatic_mode)
+        self.automatic_mode_button.pack(side=tk.LEFT)
+        
+        self.timer_label = ttk.Label(automatic_frame, text="00:00")
+        self.timer_label.pack(side=tk.LEFT, padx=(10, 0))
+        
+        self.pause_button = ttk.Button(automatic_frame, text="Pause", command=self.pause_resume_timer)
+        self.pause_button.pack(side=tk.LEFT, padx=(10, 0))
+
+        # Bind to start automatic mode if it's on at startup
+        if self.automatic_mode.get():
+            self.start_automatic_mode()
+
+    def toggle_automatic_mode(self):
+        if self.automatic_mode.get():
+            self.automatic_mode.set(False)
+            self.stop_automatic_mode()
+            self.automatic_mode_button.config(style="TButton")  # Back to default style
+        else:
+            self.automatic_mode.set(True)
+            self.start_automatic_mode()
+            self.automatic_mode_button.config(style="Green.TButton")  # Green style when on
+
+    def start_automatic_mode(self):
+        self.automatic_mode_running = True
+        threading.Thread(target=self.automatic_fetch_loop, daemon=True).start()
+        self.update_timer()
+        self.automatic_mode_button.config(style="Green.TButton")  # Set to green when started
+
+    def stop_automatic_mode(self):
+        self.automatic_mode_running = False
+        self.automatic_mode_button.config(style="TButton")  # Back to default when stopped
+
+    def pause_resume_timer(self):
+        self.timer_paused = not self.timer_paused
+        self.pause_button.config(text="Resume" if self.timer_paused else "Pause")
+        if not self.timer_paused and self.automatic_mode.get():  # Only start updating if not paused and automatic mode is on
+            self.timer_start_time = datetime.now() + timedelta(seconds=self.sleep_time_seconds)
+            self.update_timer()  # Start or resume the timer update
+        else:
+            self.timer_label.config(text="Paused" if self.timer_paused else self.timer_label.cget("text"))  # Keep the last time if resuming
+
+    def automatic_fetch_loop(self):
+        while self.automatic_mode.get() and not self.timer_paused:
+            start_time = time.time()
+            for url, profile in self.profiles.items():
+                if profile.get('opt_in_for_automatic_mode', False):
+                    self.fetch_new_chapters(url, profile)
+            
+            if not self.timer_paused:
+                elapsed_time = time.time() - start_time
+                remaining_sleep = max(0, self.sleep_time_seconds - elapsed_time)  # Ensure we don't sleep for negative time
+                time.sleep(remaining_sleep)
+                self.timer_start_time = None  # Reset timer for next loop
+                self.after(0, self.update_timer)  # Ensure UI updates immediately
+            else:
+                while self.timer_paused:
+                    time.sleep(1)
+
+    def update_timer(self):
+        if self.automatic_mode_running and not self.timer_paused:
+            if self.timer_start_time is None:
+                self.timer_start_time = datetime.now() + timedelta(seconds=self.sleep_time_seconds)
+            remaining = (self.timer_start_time - datetime.now()).total_seconds()
+            if remaining <= 0:
+                self.timer_start_time = None
+                if not self.timer_paused:
+                    threading.Thread(target=self.automatic_fetch_loop, daemon=True).start()
+            else:
+                minutes, seconds = divmod(int(remaining), 60)
+                self.timer_label.config(text=f"{minutes:02d}:{seconds:02d}")
+                self.after(1000, self.update_timer)
+        else:
+            if self.timer_paused:
+                self.timer_label.config(text="Paused")
+            else:
+                self.timer_label.config(text="00:00")  # Reset or show last known time when not paused but not running  
+
+    def generate_filename(self, chapters):
+        lowermost_title = chapters[-1]['title']
+        uppermost_title = chapters[0]['title']
+        default_filename = f"{self.sanitize_filename(lowermost_title)}-{self.sanitize_filename(uppermost_title)}" if len(chapters) > 1 else self.sanitize_filename(chapters[0]['title'])
+        return default_filename
+
+    def fetch_new_chapters(self, url, profile):
+        last_fetched = profile.get("last_fetched", "")
+        chapters = self.fetch_kemono_chapters_silent(url)
+        new_chapters = [ch for ch in chapters if ch['published'] > last_fetched]
+        if new_chapters:
+            filename = self.generate_filename(new_chapters)
+            filepath = self.create_epub(new_chapters, profile['title'], profile['author'], url, filename)
+            # Update last_fetched
+            profile["last_fetched"] = max(chap['published'] for chap in new_chapters)
+            self.save_profiles()  # Save updated profiles
+
+    def fetch_kemono_chapters_silent(self, feed_url):
+        all_chapters = []
+        offset = 0
+        while True:
+            paginated_url = f"{feed_url}?o={offset}" if self.paginate_chapters.get() else feed_url
+            response = requests.get(paginated_url)
+            response.raise_for_status()
+            data = response.json()
+            if not data:
+                break
+            all_chapters.extend(data)
+            if not self.paginate_chapters.get():
+                break
+            offset += 50
+        return sorted(all_chapters, key=lambda x: x.get('published', ''), reverse=True)
+
+    def update_button_state(self, event):
+        selected = self.profile_list.selection()
+        state = 'normal' if selected else 'disabled'
+        self.download_button.config(state=state)
+    
+    def deselect_on_empty_click(self, event):
+        # Check if the click was on an empty part of the Treeview
+        item = self.profile_list.identify_row(event.y)
+        if item == '':
+            self.profile_list.selection_remove(self.profile_list.selection())
+        else:
+            self.on_treeview_click(event)  # If clicked on an item, select it
+
+    def show_context_menu(self, event):
+        item = self.profile_list.identify_row(event.y)
+        if item:
+            self.profile_list.selection_set(item)
+            self.profile_list.focus(item)
+            
+            context_menu = tk.Menu(self, tearoff=0)
+            context_menu.add_command(label='Edit Profile', command=self.edit_profile)
+            context_menu.add_command(label='Delete Profile', command=self.delete_profile)
+            context_menu.tk_popup(event.x_root, event.y_root)
+        else:
+            # If no item is under the cursor, don't show the menu
+            return
 
     def on_treeview_click(self, event):
-        if self.profile_list.identify_region(event.x, event.y) == "cell":
-            self.profile_list.selection_add(self.profile_list.identify_row(event.y))
+        item = self.profile_list.identify_row(event.y)
+        if item == '':
+            self.profile_list.selection_remove(self.profile_list.selection())
+        else:
+            self.profile_list.selection_set(item)
 
     def sanitize_filename(self, filename):
         return re.sub(r'[^\w\s-]', '', filename).strip().replace(" ", "_")
@@ -82,16 +247,101 @@ class KemonoWebnovelDownloader(tk.Tk):
         return link if "kemono.su/api/v1/" in link else None
 
     def fetch_kemono_chapters(self, feed_url):
-        try:
-            response = requests.get(feed_url)
-            response.raise_for_status()
-            data = response.json()
-            return sorted(data, key=lambda x: x.get('published', ''), reverse=True)
-        except requests.exceptions.RequestException as e:
-            messagebox.showerror("Error", f"Failed to fetch chapters: {e}")
-            return []
+        self.is_fetching = True
+        self.stop_fetching.clear()
 
-    def create_epub(self, chapters, title, author, directory, filename):
+        def fetch_chapters():
+            all_chapters = []
+            offset = 0
+            max_retries = 3
+
+            popup = self.show_loading_popup()
+            try:
+                while True:
+                    if self.stop_fetching.is_set():
+                        return
+
+                    paginated_url = f"{feed_url}?o={offset}" if self.paginate_chapters.get() else feed_url
+                    for attempt in range(max_retries + 1):
+                        if self.stop_fetching.is_set():
+                            return
+
+                        try:
+                            response = requests.get(paginated_url)
+                            response.raise_for_status()
+                            data = response.json()
+                            
+                            if not data:  # Stop if no data returned
+                                self.chapters_fetched(all_chapters)
+                                return
+
+                            all_chapters.extend(data)
+
+                            if not self.paginate_chapters.get():  # If pagination is disabled, stop after the first fetch
+                                self.chapters_fetched(all_chapters)
+                                return
+
+                            offset += 50  # Increment by 50 for the next batch of chapters
+                            break  # Successful fetch, move to next batch
+
+                        except requests.exceptions.RequestException as e:
+                            if attempt == max_retries or self.stop_fetching.is_set():
+                                self.chapters_error(f"Failed to fetch chapters after {max_retries} retries: {e}")
+                                return
+                            else:
+                                time.sleep(1 * (2 ** attempt))  # Exponential backoff
+                                continue
+            finally:
+                self.is_fetching = False
+                self.after(0, popup.destroy)  # Ensure popup is closed in the main thread
+
+        # Start the fetching in a new thread
+        threading.Thread(target=fetch_chapters, daemon=True).start()
+
+    def chapters_fetched(self, chapters):
+        if not self.stop_fetching.is_set():  # Only update if not cancelled
+            chapters = sorted(chapters, key=lambda x: x.get('published', ''), reverse=True)
+            self.after(0, lambda: self.preview_chapters_with_data(chapters))
+
+    def chapters_error(self, error_message):
+        self.is_fetching = False
+        self.after(0, lambda: messagebox.showerror("Error", error_message))
+
+    def chapters_cancelled(self):
+        self.is_fetching = False
+        self.after(0, lambda: messagebox.showinfo("Info", "Chapter fetching was cancelled."))
+
+    def show_loading_popup(self):
+        popup = tk.Toplevel(self)
+        popup.title("Loading")
+        popup.geometry("300x100")
+        popup.resizable(False, False)
+        popup.grab_set()
+
+        frame = ttk.Frame(popup, padding="5")
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        label = ttk.Label(frame, text="This might take a while...")
+        label.pack(pady=5)
+
+        def cancel_fetch():
+            self.stop_fetching.set()
+            popup.destroy()
+
+        cancel_button = ttk.Button(frame, text="Cancel", command=cancel_fetch)
+        cancel_button.pack(pady=5)
+
+        popup.update_idletasks()
+        width = popup.winfo_width()
+        height = popup.winfo_height()
+        x = self.winfo_x() + (self.winfo_width() // 2) - (width // 2)
+        y = self.winfo_y() + (self.winfo_height() // 2) - (height // 2)
+        popup.geometry(f"{width}x{height}+{x}+{y}")
+
+        popup.protocol("WM_DELETE_WINDOW", cancel_fetch)
+        return popup
+
+    def create_epub(self, chapters, title, author, profile_url, filename):
         chapters = sorted(chapters, key=lambda x: x['published'])
         
         book = epub.EpubBook()
@@ -114,6 +364,7 @@ class KemonoWebnovelDownloader(tk.Tk):
         book.add_item(epub.EpubNav())
         book.spine = ['nav'] + epub_chapters
 
+        directory = self.profiles[profile_url].get('directory', self.output_directory)  # Use profile-specific directory
         filename = f"{self.sanitize_filename(filename)}.epub"
         filepath = os.path.join(directory, filename)
         epub.write_epub(filepath, book)
@@ -122,25 +373,40 @@ class KemonoWebnovelDownloader(tk.Tk):
     def load_profiles(self):
         try:
             with open("profiles.json", "r") as file:
-                return json.load(file)
+                data = json.load(file)
+                for url, profile in data.items():
+                    # Only update directory if it's not in the JSON
+                    if 'directory' not in profile or not profile['directory']:
+                        profile['directory'] = self.output_directory
+                return data
         except FileNotFoundError:
+            return {}
+        except json.JSONDecodeError as e:
+            print(f"JSON Decode Error: {e}")
+            messagebox.showerror("Error", f"The profiles.json file is not valid JSON. Error: {e}")
             return {}
 
     def save_profiles(self):
+        for url, profile in self.profiles.items():
+            # Ensure directory is included and is string type
+            profile['directory'] = str(profile.get('directory', self.output_directory))
         with open("profiles.json", "w") as file:
             json.dump(self.profiles, file, indent=4)
 
     def add_profile(self):
         add_window = tk.Toplevel(self)
         add_window.title("Add New Profile")
-        add_window.geometry("300x200")
+        add_window.geometry("350x200")
         
         profile_data = {}
+        profile_data['opt_in_for_automatic_mode'] = tk.BooleanVar(value=False)
 
         def submit_profile():
             url = profile_data['url'].get()
             title = profile_data['title'].get()
             author = profile_data['author'].get()
+            directory = profile_data['directory'].get() or self.output_directory  # Default to current working directory if not specified
+            opt_in_automatic = profile_data['opt_in_for_automatic_mode'].get()  # New property
             
             fixed_url = self.fix_link(url)
             if not fixed_url:
@@ -151,28 +417,47 @@ class KemonoWebnovelDownloader(tk.Tk):
                 messagebox.showwarning("Warning", "This profile already exists.")
                 return
             
-            self.profiles[fixed_url] = {"title": title or "Unknown Title", "author": author or "Unknown Author", "last_fetched": ""}
+            self.profiles[fixed_url] = {
+                "title": title or "Unknown Title", 
+                "author": author or "Unknown Author", 
+                "last_fetched": "", 
+                "directory": directory,
+                "opt_in_for_automatic_mode": opt_in_automatic  # Include new property
+            }
             self.update_profile_list()
             self.save_profiles()
             add_window.destroy()
 
         # URL Entry
-        ttk.Label(add_window, text="URL:").grid(row=0, column=0, sticky="w", padx=5, pady=5)
-        profile_data['url'] = ttk.Entry(add_window, width=30)
-        profile_data['url'].grid(row=0, column=1, padx=5, pady=5)
+        ttk.Label(add_window, text="URL:").grid(row=0, column=0, sticky="w", padx=5, pady=2)
+        profile_data['url'] = ttk.Entry(add_window, width=40)
+        profile_data['url'].grid(row=0, column=1, padx=(5, 20), pady=2, sticky="ew")
 
         # Title Entry
-        ttk.Label(add_window, text="Title:").grid(row=1, column=0, sticky="w", padx=5, pady=5)
-        profile_data['title'] = ttk.Entry(add_window, width=30)
-        profile_data['title'].grid(row=1, column=1, padx=5, pady=5)
+        ttk.Label(add_window, text="Title:").grid(row=1, column=0, sticky="w", padx=5, pady=2)
+        profile_data['title'] = ttk.Entry(add_window, width=40)
+        profile_data['title'].grid(row=1, column=1, padx=(5, 20), pady=2, sticky="ew")
 
         # Author Entry
-        ttk.Label(add_window, text="Author:").grid(row=2, column=0, sticky="w", padx=5, pady=5)
-        profile_data['author'] = ttk.Entry(add_window, width=30)
-        profile_data['author'].grid(row=2, column=1, padx=5, pady=5)
+        ttk.Label(add_window, text="Author:").grid(row=2, column=0, sticky="w", padx=5, pady=2)
+        profile_data['author'] = ttk.Entry(add_window, width=40)
+        profile_data['author'].grid(row=2, column=1, padx=(5, 20), pady=2, sticky="ew")
+
+        # Directory Entry
+        ttk.Label(add_window, text="Directory:").grid(row=3, column=0, sticky="w", padx=5, pady=2)
+        profile_data['directory'] = ttk.Entry(add_window, width=40)
+        profile_data['directory'].grid(row=3, column=1, padx=(5, 20), pady=2, sticky="ew")
 
         # Submit Button
-        ttk.Button(add_window, text="Submit", command=submit_profile).grid(row=3, column=0, columnspan=2, pady=10)
+        submit_button = ttk.Button(add_window, text="Submit", command=submit_profile, width=15)
+        submit_button.grid(row=4, column=0, columnspan=2, pady=10)
+
+        # Configure grid to expand columns if window is resized, but keep a margin
+        add_window.grid_columnconfigure(1, weight=1)
+        
+        # Opt in for automatic mode
+        ttk.Label(add_window, text="Opt in for automatic mode:").grid(row=5, column=0, sticky="w", padx=5, pady=2)
+        ttk.Checkbutton(add_window, variable=profile_data['opt_in_for_automatic_mode']).grid(row=5, column=1, padx=5, pady=2, sticky="w")
 
     def edit_profile(self):
         selected = self.profile_list.selection()
@@ -183,19 +468,23 @@ class KemonoWebnovelDownloader(tk.Tk):
         url = self.profile_list.item(selected[0])['values'][2]  # Changed index due to column order
         edit_window = tk.Toplevel(self)
         edit_window.title("Edit Profile")
-        edit_window.geometry("300x200")
+        edit_window.geometry("350x200")  # Match the window size with Add Profile
         
         profile_data = {}
+        profile_data['opt_in_for_automatic_mode'] = tk.BooleanVar(value=self.profiles[url].get('opt_in_for_automatic_mode', False))
 
         # Populate entries with current profile data
         profile_data['url'] = tk.StringVar(value=url)
         profile_data['title'] = tk.StringVar(value=self.profiles[url]['title'])
         profile_data['author'] = tk.StringVar(value=self.profiles[url]['author'])
+        profile_data['directory'] = tk.StringVar(value=self.profiles[url].get('directory', self.output_directory))
 
         def update_profile():
             new_title = profile_data['title'].get()
             new_author = profile_data['author'].get()
             new_url = profile_data['url'].get()
+            new_directory = profile_data['directory'].get() or self.output_directory
+            opt_in_automatic = profile_data['opt_in_for_automatic_mode'].get()  # New property
             
             new_fixed_url = self.fix_link(new_url)
             if not new_fixed_url:
@@ -210,29 +499,49 @@ class KemonoWebnovelDownloader(tk.Tk):
                 # Remove old profile and add new one
                 last_fetched = self.profiles[url].get("last_fetched", "")
                 del self.profiles[url]  # Remove old profile
-                self.profiles[new_fixed_url] = {"title": new_title, "author": new_author, "last_fetched": last_fetched}
+                self.profiles[new_fixed_url] = {
+                    "title": new_title, 
+                    "author": new_author, 
+                    "last_fetched": last_fetched, 
+                    "directory": new_directory,
+                    "opt_in_for_automatic_mode": opt_in_automatic  # Include new property
+                }
             else:
                 self.profiles[url]['title'] = new_title
                 self.profiles[url]['author'] = new_author
+                self.profiles[url]['directory'] = new_directory
+                self.profiles[url]['opt_in_for_automatic_mode'] = opt_in_automatic  # Update new property
 
             self.update_profile_list()
             self.save_profiles()
             edit_window.destroy()
 
         # URL Entry
-        ttk.Label(edit_window, text="URL:").grid(row=0, column=0, sticky="w", padx=5, pady=5)
-        ttk.Entry(edit_window, textvariable=profile_data['url'], width=30).grid(row=0, column=1, padx=5, pady=5)
+        ttk.Label(edit_window, text="URL:").grid(row=0, column=0, sticky="w", padx=5, pady=2)
+        ttk.Entry(edit_window, textvariable=profile_data['url'], width=40).grid(row=0, column=1, padx=(5, 20), pady=2, sticky="ew")
 
         # Title Entry
-        ttk.Label(edit_window, text="Title:").grid(row=1, column=0, sticky="w", padx=5, pady=5)
-        ttk.Entry(edit_window, textvariable=profile_data['title'], width=30).grid(row=1, column=1, padx=5, pady=5)
+        ttk.Label(edit_window, text="Title:").grid(row=1, column=0, sticky="w", padx=5, pady=2)
+        ttk.Entry(edit_window, textvariable=profile_data['title'], width=40).grid(row=1, column=1, padx=(5, 20), pady=2, sticky="ew")
 
         # Author Entry
-        ttk.Label(edit_window, text="Author:").grid(row=2, column=0, sticky="w", padx=5, pady=5)
-        ttk.Entry(edit_window, textvariable=profile_data['author'], width=30).grid(row=2, column=1, padx=5, pady=5)
+        ttk.Label(edit_window, text="Author:").grid(row=2, column=0, sticky="w", padx=5, pady=2)
+        ttk.Entry(edit_window, textvariable=profile_data['author'], width=40).grid(row=2, column=1, padx=(5, 20), pady=2, sticky="ew")
+
+        # Directory Entry
+        ttk.Label(edit_window, text="Directory:").grid(row=3, column=0, sticky="w", padx=5, pady=2)
+        ttk.Entry(edit_window, textvariable=profile_data['directory'], width=40).grid(row=3, column=1, padx=(5, 20), pady=2, sticky="ew")
 
         # Update Button
-        ttk.Button(edit_window, text="Update", command=update_profile).grid(row=3, column=0, columnspan=2, pady=10)
+        update_button = ttk.Button(edit_window, text="Update", command=update_profile, width=15)
+        update_button.grid(row=4, column=0, columnspan=2, pady=10)
+
+        # Configure grid to expand columns if window is resized, but keep a margin
+        edit_window.grid_columnconfigure(1, weight=1)
+        
+        # Opt in for automatic mode
+        ttk.Label(edit_window, text="Opt in for automatic mode:").grid(row=5, column=0, sticky="w", padx=5, pady=2)
+        ttk.Checkbutton(edit_window, variable=profile_data['opt_in_for_automatic_mode']).grid(row=5, column=1, padx=5, pady=2, sticky="w")
 
     def delete_profile(self):
         selected = self.profile_list.selection()
@@ -248,19 +557,35 @@ class KemonoWebnovelDownloader(tk.Tk):
         self.profile_list.delete(*self.profile_list.get_children())
         for url, details in self.profiles.items():
             self.profile_list.insert("", "end", values=(details['title'], details['author'], url))
+        
+        # Update button state based on selection
+        selected = self.profile_list.selection()
+        state = 'normal' if selected else 'disabled'
+        self.download_button.config(state=state)
 
     def preview_chapters(self):
+        if self.is_fetching:
+            messagebox.showinfo("Fetching", "Already fetching chapters. Please wait.")
+            return
+
         selected = self.profile_list.selection()
         if not selected:
             messagebox.showerror("Error", "No profile selected.")
             return
         
-        url = self.profile_list.item(selected[0])['values'][2]  # Changed index due to column order
-        chapters = self.fetch_kemono_chapters(url)
+        url = self.profile_list.item(selected[0])['values'][2]
+        self.fetch_kemono_chapters(url)
+
+    def preview_chapters_with_data(self, chapters):
         if not chapters:
             messagebox.showerror("Error", "No chapters found for this profile.")
             return
 
+        selected = self.profile_list.selection()
+        if not selected:
+            return
+
+        url = self.profile_list.item(selected[0])['values'][2]
         profile = self.profiles[url]
         last_fetched = profile.get("last_fetched", "")
         for chapter in chapters:
@@ -314,7 +639,7 @@ class KemonoWebnovelDownloader(tk.Tk):
                 new_title = metadata_window.title_entry.get()
                 new_author = metadata_window.author_entry.get()
                 new_filename = metadata_window.filename_entry.get()
-                filepath = self.create_epub(selected_chapters, new_title, new_author, self.output_directory, new_filename)
+                filepath = self.create_epub(selected_chapters, new_title, new_author, url, new_filename)
                 messagebox.showinfo("Success", f"EPUB created at: {filepath}")
                 self.profiles[url]["last_fetched"] = max(chap['published'] for chap in selected_chapters)
                 self.save_profiles()
