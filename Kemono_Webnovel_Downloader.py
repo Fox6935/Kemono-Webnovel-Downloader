@@ -36,7 +36,7 @@ class KemonoWebnovelDownloader(tk.Tk):
         self.timer_start_time = None
         self.timer_label = None
         self.automatic_mode = tk.BooleanVar(value=False)
-        self.sleep_time_seconds = 30  # Default to 30 minutes
+        self.sleep_time_seconds = 1800  # Default to 30 minutes
         
         self.setup_ui()
 
