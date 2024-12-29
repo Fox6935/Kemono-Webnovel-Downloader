@@ -47,11 +47,17 @@ For your security, this application is provided as source code without an execut
 
 If you want to create an executable from this Python script for personal use, here are the steps:
 
-1. **Install PyInstaller**:
+1. **Install PyInstaller and prerequisit libraries**:
 
-   ```bash
-   pip install pyinstaller
-   ```
+```bash
+pip install pyinstaller
+```
+
+```bash
+pip install requests ebooklib
+```
+- Other libraries should already come preinstalled with Python 3.11+
+
 2. **Navigate to the directory with your script and open terminal**:
 
 - Make sure terminal is open to the correct directory containing the Kemono_Webnovel_Downloader.py
