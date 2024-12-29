@@ -342,7 +342,7 @@ class KemonoWebnovelDownloader(tk.Tk):
 
     def create_epub(self, chapters, title, author, profile_url, filename):
         chapters = sorted(chapters, key=lambda x: x['published'])
-        
+
         book = epub.EpubBook()
         book.set_language("en")
         book.set_title(title)
@@ -353,8 +353,40 @@ class KemonoWebnovelDownloader(tk.Tk):
             chapter_title = chapter['title']
             content = f"<h1>{chapter_title}</h1>\n<p>{chapter.get('content', '')}</p>"
 
+            # regex images
+            base_url = "https://n4.kemono.su/data"
+            pattern = r'<img[^>]+src="([^"]+)"'
+            matches = re.findall(pattern, content)
+
+            for i2, match in enumerate(matches):
+                full_url = base_url + match
+                try:
+                    print(f"Downloading {full_url}")
+                    response = requests.get(full_url)
+                    response.raise_for_status()
+
+                    # Create an EPUB image item
+                    image_name = f"{match}"
+                    image_item = epub.EpubItem(
+                        uid=f"img{i2 + 1}",
+                        file_name=f"images/{image_name}",
+                        media_type="image/webp",
+                        content=response.content
+                    )
+
+                    # Add the image to the EPUB book
+                    book.add_item(image_item)
+                    print(f"Added {image_name} to the EPUB.")
+
+                    # Append "/image" to the start of the src path via str replace
+                    content = content.replace(match, f"images{match}")
+
+                except requests.exceptions.RequestException as e:
+                    print(f"Failed to download {full_url}: {e}")
+
             chapter_epub = epub.EpubHtml(title=chapter_title, file_name=f'chap_{i:02}.xhtml', lang='en')
             chapter_epub.content = content
+
             epub_chapters.append(chapter_epub)
             book.add_item(chapter_epub)
 
