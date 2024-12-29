@@ -32,11 +32,10 @@ class KemonoWebnovelDownloader(tk.Tk):
         self.paginate_chapters = tk.BooleanVar(value=False)  # New variable for pagination toggle
         
         self.automatic_mode_running = False
-        self.timer_paused = False
         self.timer_start_time = None
         self.timer_label = None
         self.automatic_mode = tk.BooleanVar(value=False)
-        self.sleep_time_seconds = 1800  # Default to 30 minutes
+        self.sleep_time_seconds = 1800  # Change this value for a different "automatic mode" time interval
         
         self.setup_ui()
 
@@ -86,9 +85,6 @@ class KemonoWebnovelDownloader(tk.Tk):
         
         self.timer_label = ttk.Label(automatic_frame, text="00:00")
         self.timer_label.pack(side=tk.LEFT, padx=(10, 0))
-        
-        self.pause_button = ttk.Button(automatic_frame, text="Pause", command=self.pause_resume_timer)
-        self.pause_button.pack(side=tk.LEFT, padx=(10, 0))
 
         # Bind to start automatic mode if it's on at startup
         if self.automatic_mode.get():
@@ -114,50 +110,35 @@ class KemonoWebnovelDownloader(tk.Tk):
         self.automatic_mode_running = False
         self.automatic_mode_button.config(style="TButton")  # Back to default when stopped
 
-    def pause_resume_timer(self):
-        self.timer_paused = not self.timer_paused
-        self.pause_button.config(text="Resume" if self.timer_paused else "Pause")
-        if not self.timer_paused and self.automatic_mode.get():  # Only start updating if not paused and automatic mode is on
-            self.timer_start_time = datetime.now() + timedelta(seconds=self.sleep_time_seconds)
-            self.update_timer()  # Start or resume the timer update
-        else:
-            self.timer_label.config(text="Paused" if self.timer_paused else self.timer_label.cget("text"))  # Keep the last time if resuming
-
     def automatic_fetch_loop(self):
-        while self.automatic_mode.get() and not self.timer_paused:
+        while self.automatic_mode_running:
             start_time = time.time()
             for url, profile in self.profiles.items():
+                if not self.automatic_mode_running or self.stop_fetching.is_set():
+                    return
                 if profile.get('opt_in_for_automatic_mode', False):
                     self.fetch_new_chapters(url, profile)
-            
-            if not self.timer_paused:
-                elapsed_time = time.time() - start_time
-                remaining_sleep = max(0, self.sleep_time_seconds - elapsed_time)  # Ensure we don't sleep for negative time
-                time.sleep(remaining_sleep)
-                self.timer_start_time = None  # Reset timer for next loop
-                self.after(0, self.update_timer)  # Ensure UI updates immediately
-            else:
-                while self.timer_paused:
-                    time.sleep(1)
+
+            # Calculate elapsed time and sleep the remaining time to hit the interval
+            elapsed_time = time.time() - start_time
+            sleep_time = max(0, self.sleep_time_seconds - elapsed_time)  # Ensure no negative sleep time
+            time.sleep(sleep_time)
+
+            # Reset timer for next cycle
+            self.timer_start_time = datetime.now() + timedelta(seconds=self.sleep_time_seconds)
 
     def update_timer(self):
-        if self.automatic_mode_running and not self.timer_paused:
+        if self.automatic_mode_running:
             if self.timer_start_time is None:
                 self.timer_start_time = datetime.now() + timedelta(seconds=self.sleep_time_seconds)
             remaining = (self.timer_start_time - datetime.now()).total_seconds()
             if remaining <= 0:
+                self.timer_label.config(text="00:00")
                 self.timer_start_time = None
-                if not self.timer_paused:
-                    threading.Thread(target=self.automatic_fetch_loop, daemon=True).start()
             else:
                 minutes, seconds = divmod(int(remaining), 60)
                 self.timer_label.config(text=f"{minutes:02d}:{seconds:02d}")
-                self.after(1000, self.update_timer)
-        else:
-            if self.timer_paused:
-                self.timer_label.config(text="Paused")
-            else:
-                self.timer_label.config(text="00:00")  # Reset or show last known time when not paused but not running  
+                self.after(1000, self.update_timer)  # Update every second 
 
     def generate_filename(self, chapters):
         lowermost_title = chapters[-1]['title']
@@ -234,17 +215,35 @@ class KemonoWebnovelDownloader(tk.Tk):
             return None
         link = link.strip()
 
-        # Handle relative links
-        if not link.startswith("http"):
-            link = f"https://kemono.su/{link.lstrip('/')}"
-        
-        # Normalize URL
-        if link.startswith("www."):
-            link = f"https://{link}"
-        if link.startswith("https://kemono.su/") and not link.startswith("https://kemono.su/api/v1/"):
-            link = link.replace("https://kemono.su/", "https://kemono.su/api/v1/")
+        # Check if it's a raw Patreon URL
+        if "patreon.com" in link.lower():
+            user_id = self.get_patreon_user_id(link)
+            if user_id:
+                link = f"https://kemono.su/api/v1/patreon/user/{user_id}"
+            else:
+                return None  # If we can't get the user ID, return None
+        else:
+            # Handle other links, ensuring they start with 'http' if they don't
+            if not link.startswith("http"):
+                link = f"https://{link.lstrip('/')}" if link.startswith("kemono.su") else f"https://kemono.su/{link.lstrip('/')}"
+            
+            # Normalize URL to ensure it uses the full path for kemono links
+            if link.startswith("www."):
+                link = f"https://{link}"
+            if link.startswith("https://kemono.su/") and not link.startswith("https://kemono.su/api/v1/"):
+                link = link.replace("https://kemono.su/", "https://kemono.su/api/v1/")
         
         return link if "kemono.su/api/v1/" in link else None
+
+    def get_patreon_user_id(self, url):
+        try:
+            response = requests.get(url)
+            response.raise_for_status()
+            # Look for the creator ID pattern directly in the response text
+            match = re.search(r'"creator":\s*{\s*"data":\s*{\s*"id":\s*"(\d+)"', response.text)
+            return match.group(1) if match else None
+        except requests.RequestException:
+            return None
 
     def fetch_kemono_chapters(self, feed_url):
         self.is_fetching = True
