@@ -49,14 +49,14 @@ If you want to create an executable from this Python script for personal use, he
 
 1. **Install PyInstaller and prerequisit libraries**:
 
+- Some libraries should already come preinstalled with Python 3.11+
+
 ```bash
 pip install pyinstaller
 ```
-
 ```bash
 pip install requests ebooklib
 ```
-- Other libraries should already come preinstalled with Python 3.11+
 
 2. **Navigate to the directory with your script and open terminal**:
 
