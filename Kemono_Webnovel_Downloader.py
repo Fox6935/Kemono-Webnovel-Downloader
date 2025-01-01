@@ -59,7 +59,7 @@ class KemonoWebnovelDownloader(tk.Tk):
         self.profile_list.bind('<<TreeviewSelect>>', self.update_button_state)
 
         # Pagination toggle checkbox
-        self.pagination_checkbox = ttk.Checkbutton(
+        self.pagination_checkbox = tk.Checkbutton(
             main_frame, text="Fetch all chapters (will take longer)", variable=self.paginate_chapters
         )
         self.pagination_checkbox.pack(anchor=tk.W, pady=5)
@@ -421,8 +421,23 @@ class KemonoWebnovelDownloader(tk.Tk):
     def add_profile(self):
         add_window = tk.Toplevel(self)
         add_window.title("Add New Profile")
-        add_window.geometry("350x200")
+        add_window.transient(self)
         
+        # Calculate position relative to the parent window
+        parent_x = self.winfo_rootx()
+        parent_y = self.winfo_rooty()
+        parent_width = self.winfo_width()
+        parent_height = self.winfo_height()
+
+        add_width = 450
+        add_height = 250
+
+        # Center the metadata window relative to the parent
+        x = parent_x + (parent_width // 2) - (add_width // 2)
+        y = parent_y + (parent_height // 2) - (add_height // 2)
+
+        add_window.geometry(f"{add_width}x{add_height}+{x}+{y}")
+
         profile_data = {}
         profile_data['opt_in_for_automatic_mode'] = tk.BooleanVar(value=False)
 
@@ -452,37 +467,44 @@ class KemonoWebnovelDownloader(tk.Tk):
             self.update_profile_list()
             self.save_profiles()
             add_window.destroy()
-
+        
         # URL Entry
-        ttk.Label(add_window, text="URL:").grid(row=0, column=0, sticky="w", padx=5, pady=2)
+        tk.Label(add_window, text="URL:").grid(row=0, column=0, sticky="e", padx=5, pady=2)
         profile_data['url'] = ttk.Entry(add_window, width=40)
         profile_data['url'].grid(row=0, column=1, padx=(5, 20), pady=2, sticky="ew")
 
         # Title Entry
-        ttk.Label(add_window, text="Title:").grid(row=1, column=0, sticky="w", padx=5, pady=2)
+        tk.Label(add_window, text="Title:").grid(row=1, column=0, sticky="e", padx=5, pady=2)
         profile_data['title'] = ttk.Entry(add_window, width=40)
         profile_data['title'].grid(row=1, column=1, padx=(5, 20), pady=2, sticky="ew")
 
         # Author Entry
-        ttk.Label(add_window, text="Author:").grid(row=2, column=0, sticky="w", padx=5, pady=2)
+        tk.Label(add_window, text="Author:").grid(row=2, column=0, sticky="e", padx=5, pady=2)
         profile_data['author'] = ttk.Entry(add_window, width=40)
         profile_data['author'].grid(row=2, column=1, padx=(5, 20), pady=2, sticky="ew")
 
         # Directory Entry
-        ttk.Label(add_window, text="Directory:").grid(row=3, column=0, sticky="w", padx=5, pady=2)
+        tk.Label(add_window, text="Directory:").grid(row=3, column=0, sticky="e", padx=5, pady=2)
         profile_data['directory'] = ttk.Entry(add_window, width=40)
         profile_data['directory'].grid(row=3, column=1, padx=(5, 20), pady=2, sticky="ew")
+        ttk.Button(add_window, text="Browse", command=lambda: self.select_directory(profile_data['directory'])).grid(row=3, column=2, padx=10, pady=5, sticky='w')
 
         # Submit Button
         submit_button = ttk.Button(add_window, text="Submit", command=submit_profile, width=15)
-        submit_button.grid(row=4, column=0, columnspan=2, pady=10)
+        submit_button.grid(row=5, column=0, columnspan=4, pady=10)
 
         # Configure grid to expand columns if window is resized, but keep a margin
         add_window.grid_columnconfigure(1, weight=1)
         
         # Opt in for automatic mode
-        ttk.Label(add_window, text="Opt in for automatic mode:").grid(row=5, column=0, sticky="w", padx=5, pady=2)
-        ttk.Checkbutton(add_window, variable=profile_data['opt_in_for_automatic_mode']).grid(row=5, column=1, padx=5, pady=2, sticky="w")
+        tk.Label(add_window, text="Automatic mode:").grid(row=4, column=0, sticky="e", padx=5, pady=2)
+        tk.Checkbutton(add_window, variable=profile_data['opt_in_for_automatic_mode']).grid(row=4, column=1, padx=5, pady=2, sticky="w")
+
+    # New method for directory selection
+    def select_directory(self, directory_var):
+        directory = filedialog.askdirectory(title="Select Directory for EPUBs")
+        if directory:
+            directory_var.set(directory)
 
     def edit_profile(self):
         selected = self.profile_list.selection()
@@ -490,83 +512,103 @@ class KemonoWebnovelDownloader(tk.Tk):
             messagebox.showerror("Error", "No profile selected.")
             return
         
-        url = self.profile_list.item(selected[0])['values'][2]  # Changed index due to column order
+        url = self.profile_list.item(selected[0])['values'][2]
         edit_window = tk.Toplevel(self)
         edit_window.title("Edit Profile")
-        edit_window.geometry("350x200")  # Match the window size with Add Profile
+        edit_window.transient(self)
         
-        profile_data = {}
-        profile_data['opt_in_for_automatic_mode'] = tk.BooleanVar(value=self.profiles[url].get('opt_in_for_automatic_mode', False))
+        # Calculate position relative to the parent window
+        parent_x = self.winfo_rootx()
+        parent_y = self.winfo_rooty()
+        parent_width = self.winfo_width()
+        parent_height = self.winfo_height()
 
-        # Populate entries with current profile data
+        edit_width = 450
+        edit_height = 250
+
+        # Center the metadata window relative to the parent
+        x = parent_x + (parent_width // 2) - (edit_width // 2)
+        y = parent_y + (parent_height // 2) - (edit_height // 2)
+
+        edit_window.geometry(f"{edit_width}x{edit_height}+{x}+{y}")
+
+        profile_data = {}
+        profile = self.profiles[url]
+        profile_data['opt_in_for_automatic_mode'] = tk.BooleanVar(value=profile.get('opt_in_for_automatic_mode', False))
+        
+        # Pre-fill entries with current profile data
         profile_data['url'] = tk.StringVar(value=url)
-        profile_data['title'] = tk.StringVar(value=self.profiles[url]['title'])
-        profile_data['author'] = tk.StringVar(value=self.profiles[url]['author'])
-        profile_data['directory'] = tk.StringVar(value=self.profiles[url].get('directory', self.output_directory))
+        profile_data['title'] = tk.StringVar(value=profile.get('title', ""))
+        profile_data['author'] = tk.StringVar(value=profile.get('author', ""))
+        profile_data['directory'] = tk.StringVar(value=profile.get('directory', self.output_directory))
 
         def update_profile():
+            new_url = profile_data['url'].get()
             new_title = profile_data['title'].get()
             new_author = profile_data['author'].get()
-            new_url = profile_data['url'].get()
             new_directory = profile_data['directory'].get() or self.output_directory
-            opt_in_automatic = profile_data['opt_in_for_automatic_mode'].get()  # New property
+            opt_in_automatic = profile_data['opt_in_for_automatic_mode'].get()
             
             new_fixed_url = self.fix_link(new_url)
             if not new_fixed_url:
                 messagebox.showerror("Error", "Invalid or unrecognized URL.")
                 return
 
-            # Handle URL change
+            if new_fixed_url != url and new_fixed_url in self.profiles:
+                messagebox.showwarning("Warning", "This profile URL already exists.")
+                return
+            
+            # Update or replace profile
             if new_fixed_url != url:
-                if new_fixed_url in self.profiles:
-                    messagebox.showwarning("Warning", "This profile URL already exists.")
-                    return
-                # Remove old profile and add new one
-                last_fetched = self.profiles[url].get("last_fetched", "")
-                del self.profiles[url]  # Remove old profile
+                last_fetched = profile.get("last_fetched", "")
+                del self.profiles[url]
                 self.profiles[new_fixed_url] = {
-                    "title": new_title, 
-                    "author": new_author, 
+                    "title": new_title or "Unknown Title", 
+                    "author": new_author or "Unknown Author", 
                     "last_fetched": last_fetched, 
                     "directory": new_directory,
-                    "opt_in_for_automatic_mode": opt_in_automatic  # Include new property
+                    "opt_in_for_automatic_mode": opt_in_automatic
                 }
             else:
-                self.profiles[url]['title'] = new_title
-                self.profiles[url]['author'] = new_author
-                self.profiles[url]['directory'] = new_directory
-                self.profiles[url]['opt_in_for_automatic_mode'] = opt_in_automatic  # Update new property
+                self.profiles[url].update({
+                    "title": new_title or "Unknown Title",
+                    "author": new_author or "Unknown Author",
+                    "directory": new_directory,
+                    "opt_in_for_automatic_mode": opt_in_automatic
+                })
 
             self.update_profile_list()
             self.save_profiles()
             edit_window.destroy()
 
         # URL Entry
-        ttk.Label(edit_window, text="URL:").grid(row=0, column=0, sticky="w", padx=5, pady=2)
+        tk.Label(edit_window, text="URL:").grid(row=0, column=0, sticky="e", padx=5, pady=2)
         ttk.Entry(edit_window, textvariable=profile_data['url'], width=40).grid(row=0, column=1, padx=(5, 20), pady=2, sticky="ew")
 
         # Title Entry
-        ttk.Label(edit_window, text="Title:").grid(row=1, column=0, sticky="w", padx=5, pady=2)
+        tk.Label(edit_window, text="Title:").grid(row=1, column=0, sticky="e", padx=5, pady=2)
         ttk.Entry(edit_window, textvariable=profile_data['title'], width=40).grid(row=1, column=1, padx=(5, 20), pady=2, sticky="ew")
 
         # Author Entry
-        ttk.Label(edit_window, text="Author:").grid(row=2, column=0, sticky="w", padx=5, pady=2)
+        tk.Label(edit_window, text="Author:").grid(row=2, column=0, sticky="e", padx=5, pady=2)
         ttk.Entry(edit_window, textvariable=profile_data['author'], width=40).grid(row=2, column=1, padx=(5, 20), pady=2, sticky="ew")
 
         # Directory Entry
-        ttk.Label(edit_window, text="Directory:").grid(row=3, column=0, sticky="w", padx=5, pady=2)
+        tk.Label(edit_window, text="Directory:").grid(row=3, column=0, sticky="e", padx=5, pady=2)
         ttk.Entry(edit_window, textvariable=profile_data['directory'], width=40).grid(row=3, column=1, padx=(5, 20), pady=2, sticky="ew")
+        ttk.Button(edit_window, text="Browse", command=lambda: self.select_directory(profile_data['directory'])).grid(row=3, column=2, padx=10, pady=5, sticky='w')
+
 
         # Update Button
         update_button = ttk.Button(edit_window, text="Update", command=update_profile, width=15)
-        update_button.grid(row=4, column=0, columnspan=2, pady=10)
+        update_button.grid(row=5, column=0, columnspan=4, pady=10)
 
         # Configure grid to expand columns if window is resized, but keep a margin
         edit_window.grid_columnconfigure(1, weight=1)
         
         # Opt in for automatic mode
-        ttk.Label(edit_window, text="Opt in for automatic mode:").grid(row=5, column=0, sticky="w", padx=5, pady=2)
-        ttk.Checkbutton(edit_window, variable=profile_data['opt_in_for_automatic_mode']).grid(row=5, column=1, padx=5, pady=2, sticky="w")
+        tk.Label(edit_window, text="Automatic mode:").grid(row=4, column=0, sticky="e", padx=5, pady=2)
+        tk.Checkbutton(edit_window, variable=profile_data['opt_in_for_automatic_mode']).grid(row=4, column=1, padx=5, pady=2, sticky="w")
 
     def delete_profile(self):
         selected = self.profile_list.selection()
@@ -618,8 +660,23 @@ class KemonoWebnovelDownloader(tk.Tk):
 
         preview_window = tk.Toplevel(self)
         preview_window.title("Chapter Preview")
-        preview_window.geometry("600x400")
+        preview_window.transient(self)
         preview_window.resizable(True, True)
+        
+        # Calculate position relative to the parent window
+        parent_x = self.winfo_rootx()
+        parent_y = self.winfo_rooty()
+        parent_width = self.winfo_width()
+        parent_height = self.winfo_height()
+
+        preview_width = 600
+        preview_height = 400
+
+        # Center the metadata window relative to the parent
+        x = parent_x + (parent_width // 2) - (preview_width // 2)
+        y = parent_y + (parent_height // 2) - (preview_height // 2)
+
+        preview_window.geometry(f"{preview_width}x{preview_height}+{x}+{y}")
 
         tree_frame = ttk.Frame(preview_window)
         tree_frame.pack(fill=tk.BOTH, expand=True)
@@ -673,6 +730,23 @@ class KemonoWebnovelDownloader(tk.Tk):
 
             metadata_window = tk.Toplevel(self)
             metadata_window.title("Edit Metadata")
+            metadata_window.transient(self)
+            
+            # Calculate position relative to the parent window
+            parent_x = self.winfo_rootx()
+            parent_y = self.winfo_rooty()
+            parent_width = self.winfo_width()
+            parent_height = self.winfo_height()
+
+            metadata_width = 300
+            metadata_height = 100
+
+            # Center the metadata window relative to the parent
+            x = parent_x + (parent_width // 2) - (metadata_width // 2)
+            y = parent_y + (parent_height // 2) - (metadata_height // 2)
+
+            metadata_window.geometry(f"{metadata_width}x{metadata_height}+{x}+{y}")
+            
             ttk.Label(metadata_window, text="Title:").grid(row=0, column=0, sticky="w")
             metadata_window.title_entry = ttk.Entry(metadata_window, width=40)
             metadata_window.title_entry.grid(row=0, column=1)
