@@ -2,6 +2,10 @@
 
 A Python application designed to download web novels from the Kemono.su, featuring an easy-to-use GUI for managing profiles, fetching chapters, and creating EPUB files.
 
+- Kemono_Webnovel_Downloader.py uses tkinter for the UI. This README is focused on this file
+- Webnovel_Downloader_PyQt6_UI.py uses PyQt6 for the UI for a more modern look. You will have to install the PyQt6 library to run this.
+- The PyQt6 application does not use threading, so the UI will freeze when fetching chapters. It does, however, have a One-Click Download button which will fetch all new chapters from a selected profile. This is great for frequent users.
+
 ## Features
 
 - **Profile Management**: Add, edit, or delete profiles for different web novels.
