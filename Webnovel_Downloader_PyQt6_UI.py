@@ -162,7 +162,7 @@ class KemonoWebnovelDownloader(QMainWindow):
         self.timer_start_time = None
         self.timer_label = QLabel("00:00")
         self.automatic_mode = False
-        self.sleep_time_seconds = 30  # Change this value for a different "automatic mode" time interval
+        self.sleep_time_seconds = 800  # Change this value for a different "automatic mode" time interval
         
         # Setup UI
         self.setup_ui(layout)
