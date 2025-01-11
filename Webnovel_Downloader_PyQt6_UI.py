@@ -154,7 +154,6 @@ class KemonoWebnovelDownloader(QMainWindow):
 
         self.is_fetching = False
         self.stop_fetching = False
-        self.paginate_chapters = False  # PyQt6 uses bool instead of BooleanVar
         self.current_chapters = []
         self.current_url = ""
         
@@ -162,7 +161,7 @@ class KemonoWebnovelDownloader(QMainWindow):
         self.timer_start_time = None
         self.timer_label = QLabel("00:00")
         self.automatic_mode = False
-        self.sleep_time_seconds = 800  # Change this value for a different "automatic mode" time interval
+        self.sleep_time_seconds = 1800  # Change this value for a different "automatic mode" time interval
         
         # Setup UI
         self.setup_ui(layout)
@@ -199,21 +198,6 @@ class KemonoWebnovelDownloader(QMainWindow):
         """)
         main_layout.addWidget(self.profile_list)
 
-        # Pagination toggle switch
-        self.pagination_switch = QTogglePagination(self)
-        self.pagination_switch.setText("Fetch All Chapters")
-        self.pagination_switch.setChecked(self.paginate_chapters)
-        self.pagination_switch.setStyleSheet("""
-            QTogglePagination {
-                qproperty-bg_color: #CCC;  
-                qproperty-circle_color: #FFF;
-                qproperty-active_color: #4287f5;  
-                qproperty-text_color: #000;
-            }
-        """)
-        self.pagination_switch.toggled.connect(self.toggle_paginate)
-        main_layout.addWidget(self.pagination_switch)
-
         # Automatic Mode section
         automatic_layout = QHBoxLayout()
         main_layout.addLayout(automatic_layout)
@@ -235,6 +219,23 @@ class KemonoWebnovelDownloader(QMainWindow):
         # Ensure the timer label is still in the layout
         self.timer_label = QLabel("00:00")
         automatic_layout.addWidget(self.timer_label)
+        
+        # Webhook Input Section
+        webhook_layout = QVBoxLayout()
+        webhook_label = QLabel("Discord Webhook (Optional):")
+        self.webhook_input = QLineEdit()
+        self.webhook_input.setPlaceholderText("Enter Discord webhook URL")
+        self.webhook_input.textChanged.connect(self.toggle_webhook_switch_visibility)
+        webhook_layout.addWidget(webhook_label)
+        webhook_layout.addWidget(self.webhook_input)
+        layout.addLayout(webhook_layout)
+
+        # Webhook Toggle Switch (initially hidden)
+        self.webhook_switch = QToggleAutomatic(self)
+        self.webhook_switch.setText("Send to Discord Webhook")
+        self.webhook_switch.setChecked(False)
+        self.webhook_switch.setVisible(False)
+        webhook_layout.addWidget(self.webhook_switch)
 
         # Buttons layout
         button_layout = QHBoxLayout()
@@ -261,12 +262,55 @@ class KemonoWebnovelDownloader(QMainWindow):
         # Start automatic mode if it's on at startup
         if self.automatic_mode:
             self.start_automatic_mode()
-    
-    def toggle_paginate(self, checked):
-        self.paginate_chapters = checked
-        print(f"paginate_chapters changed to: {self.paginate_chapters}")
-        print(f"QTogglePagination checked state: {self.pagination_switch.isChecked()}")
-        self.pagination_switch.update()  # Force repaint
+        
+    def is_valid_webhook_url(self, url):
+        return re.match(r"^https://discord.com/api/webhooks/\d+/[\w-]+$", url) is not None
+
+    def toggle_webhook_switch_visibility(self):
+        webhook_url = self.webhook_input.text().strip()
+        if self.is_valid_webhook_url(webhook_url):
+            self.webhook_switch.setVisible(True)
+        else:
+            self.webhook_switch.setVisible(False)
+
+    def send_epub_to_discord(self, epub_filepath, profile):
+        webhook_url = self.webhook_input.text().strip()
+        if not webhook_url:
+            print("No webhook URL provided.")
+            return
+
+        # Use the `with` statement to ensure the file is closed after reading
+        with open(epub_filepath, 'rb') as file:
+            files = {
+                'file': (os.path.basename(epub_filepath), file, 'application/epub+zip'),
+            }
+            payload = {
+                'content': f"New EPUB for **{profile['title']}** by {profile['author']}.",
+            }
+            try:
+                response = requests.post(webhook_url, data=payload, files=files)
+                response.raise_for_status()
+                print(f"Successfully sent EPUB '{os.path.basename(epub_filepath)}' to Discord.")
+            except requests.exceptions.RequestException as e:
+                print(f"Failed to send EPUB '{os.path.basename(epub_filepath)}' to Discord: {e}")
+
+        # Ensure the file handle is closed before attempting to delete the file
+        try:
+            self.safe_delete(epub_filepath)
+            print(f"Temporary file '{epub_filepath}' deleted.")
+        except PermissionError as e:
+            print(f"Failed to delete temporary file '{epub_filepath}': {e}")
+            
+    def safe_delete(self, filepath, retries=3, delay=1):
+        for attempt in range(retries):
+            try:
+                os.remove(filepath)
+                print(f"Successfully deleted temporary file: {filepath}")
+                return
+            except PermissionError as e:
+                print(f"Attempt {attempt + 1} to delete {filepath} failed: {e}")
+                time.sleep(delay)  # Wait before retrying
+        print(f"Failed to delete temporary file: {filepath} after {retries} attempts.")
     
     def one_click_download(self):
         selected_items = self.profile_list.selectedItems()
@@ -285,80 +329,28 @@ class KemonoWebnovelDownloader(QMainWindow):
         popup = self.show_loading_popup_with_cancel()
         self.stop_fetching = False  # Reset this since we're using it as a flag
 
-        # Fetch only the first batch of chapters without pagination
-        initial_chapters = self.fetch_kemono_chapters_silent(url, paginate=False)
-        new_chapters = [ch for ch in initial_chapters if ch['published'] > profile.get("last_fetched", "")]
+        # Fetch all chapters in one go
+        initial_chapters = self.fetch_kemono_chapters_silent(url)
+        new_chapters = [ch for ch in initial_chapters if ch["published"] > profile.get("last_fetched", "")]
 
         if new_chapters:
-            QTimer.singleShot(100, lambda: self.check_and_download_new_chapters(popup, url, profile, new_chapters))
+            filename = self.generate_filename(new_chapters)
+            epub_filepath = self.create_epub(new_chapters, profile["title"], profile["author"], url, filename)
+
+            if self.webhook_switch.isChecked():
+                # Send EPUB to Discord webhook
+                self.send_epub_to_discord(epub_filepath, profile)
+            else:
+                QMessageBox.information(self, "Success", f"EPUB created at: {epub_filepath}")
+            
+            # Update `last_fetched` and save profiles
+            profile["last_fetched"] = max(chap["published"] for chap in new_chapters)
+            self.save_profiles()
         else:
             QMessageBox.information(self, "Info", "No new chapters to download.")
-            if popup:
-                popup.close()
 
-    def check_and_download_new_chapters(self, popup, url, profile, paginate=False):
-        try:
-            last_fetched = profile.get("last_fetched", "")
-            new_chapters = []
-            offset = 0
-            max_retries = 3
-
-            while True:
-                if self.stop_fetching:
-                    print("Fetching canceled.")
-                    break
-
-                paginated_url = f"{url}?o={offset}" if paginate else url
-                for attempt in range(max_retries + 1):
-                    if self.stop_fetching:
-                        print("Fetch stopped during retry.")
-                        break
-
-                    try:
-                        response = requests.get(paginated_url)
-                        response.raise_for_status()
-                        data = response.json()
-                        
-                        # Only add new chapters
-                        batch_new_chapters = [ch for ch in data if ch['published'] > last_fetched]
-                        if batch_new_chapters:
-                            new_chapters.extend(batch_new_chapters)
-                        else:
-                            # If no new chapters in this batch, stop fetching
-                            if not paginate or not data:
-                                break
-
-                        if not data:  # No more chapters returned
-                            break
-
-                        offset += 50  # Move to the next batch of chapters
-                        break  # Successful fetch, move to next batch
-
-                    except requests.exceptions.RequestException as e:
-                        print(f"Error fetching chapters: {e}")
-                        if attempt == max_retries:
-                            raise
-                        time.sleep(1 * (2 ** attempt))  # Exponential backoff
-
-                if not data or (paginate and not batch_new_chapters):  # Stop if no more data or no new chapters when paginating
-                    break
-
-            if new_chapters:
-                filename = self.generate_filename(new_chapters)
-                filepath = self.create_epub(new_chapters, profile['title'], profile['author'], url, filename)
-                QMessageBox.information(self, "Success", f"New chapters downloaded and saved at: {filepath}")
-                profile["last_fetched"] = max(chap['published'] for chap in new_chapters)
-                self.save_profiles()  # Save updated profiles
-            else:
-                QMessageBox.information(self, "Info", "No new chapters to download.")
-
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"An error occurred while downloading: {e}")
-
-        finally:
-            self.stop_fetching = False  # Reset for next use
-            if popup:
-                popup.close()  # Close the popup when done or cancelled
+        if popup:
+            popup.close()
 
     def toggle_automatic_mode(self, checked):
         self.automatic_mode = checked
@@ -386,8 +378,15 @@ class KemonoWebnovelDownloader(QMainWindow):
                 popup.close()
                 return
             if profile.get('opt_in_for_automatic_mode', False):
-                self.fetch_new_chapters(url, profile)
+                try:
+                    self.fetch_new_chapters(url, profile)
+                except Exception as e:
+                    print(f"Error fetching chapters for {profile['title']}: {e}")
                 QApplication.processEvents()  # Keep UI responsive
+                
+                # Delay between requests
+                time.sleep(3)  # Adjust delay as needed
+                
                 if self.stop_fetching:
                     popup.close()
                     return
@@ -425,39 +424,69 @@ class KemonoWebnovelDownloader(QMainWindow):
 
     def fetch_new_chapters(self, url, profile):
         last_fetched = profile.get("last_fetched", "")
-        chapters = self.fetch_kemono_chapters_silent_auto(url)
+        chapters = self.fetch_kemono_chapters_silent_auto(url, last_fetched)  # Fetch chapters
         new_chapters = [ch for ch in chapters if ch['published'] > last_fetched]
-        if new_chapters:
+
+        if not new_chapters:
+            print(f"No new chapters found for {profile['title']}.")  # Debug log
+            return  # Exit early if no new chapters are found
+
+        if self.webhook_switch.isChecked():
             filename = self.generate_filename(new_chapters)
             filepath = self.create_epub(new_chapters, profile['title'], profile['author'], url, filename)
-            # Update last_fetched
-            profile["last_fetched"] = max(chap['published'] for chap in new_chapters)
-            self.save_profiles()  # Save updated profiles
+            self.send_epub_to_discord(filepath, profile)  # Send the EPUB file to Discord webhook
+        else:
+            filename = self.generate_filename(new_chapters)
+            filepath = self.create_epub(new_chapters, profile['title'], profile['author'], url, filename)
 
-    def fetch_kemono_chapters_silent(self, feed_url, paginate=None):
-        if paginate is None:
-            paginate = self.paginate_chapters  # Use the instance variable if not specified
+        # Update `last_fetched` to the most recent chapter
+        profile["last_fetched"] = max(chap['published'] for chap in new_chapters)
+        self.save_profiles()
 
-        all_chapters = []
-        offset = 0
-        while True:
-            paginated_url = f"{feed_url}?o={offset}" if paginate else feed_url
-            response = requests.get(paginated_url)
+    def fetch_kemono_chapters_silent(self, feed_url):
+        try:
+            response = requests.get(feed_url)
             response.raise_for_status()
             data = response.json()
-            if not data:
-                break
-            all_chapters.extend(data)
-            if not paginate:  # Stop after the first fetch if not paginating
-                break
-            offset += 50
-        return sorted(all_chapters, key=lambda x: x.get('published', ''), reverse=True)
+            print(f"Fetched {len(data)} chapters from URL: {feed_url}")
+            return sorted(data, key=lambda x: x.get('published', ''), reverse=True)
+        except requests.exceptions.RequestException as e:
+            print(f"Error fetching chapters: {e}")
+            return []
 
-    def fetch_kemono_chapters_silent_auto(self, feed_url):
-        response = requests.get(feed_url)
-        response.raise_for_status()
-        data = response.json()
-        return sorted(data, key=lambda x: x.get('published', ''), reverse=True) 
+    def fetch_kemono_chapters_silent_auto(self, feed_url, last_fetched=""):
+        all_chapters = []
+        max_retries = 3
+
+        for attempt in range(max_retries):
+            try:
+                response = requests.get(feed_url)
+                response.raise_for_status()
+                data = response.json()
+
+                # Filter out chapters older than `last_fetched`
+                for chapter in data:
+                    if last_fetched and chapter['published'] <= last_fetched:
+                        print(f"Encountered chapter older than last_fetched. Stopping early.")
+                        return sorted(all_chapters, key=lambda x: x.get('published', ''), reverse=True)
+                    all_chapters.append(chapter)
+
+                return sorted(all_chapters, key=lambda x: x.get('published', ''), reverse=True)
+
+            except requests.exceptions.HTTPError as e:
+                if response.status_code == 403:
+                    print(f"403 Forbidden for URL: {feed_url}")
+                    break
+                elif attempt < max_retries - 1:
+                    time.sleep(1 * (2 ** attempt))  # Exponential backoff
+                else:
+                    raise
+            except Exception as e:
+                print(f"Unexpected error while fetching chapters from {feed_url}: {e}")
+                if attempt == max_retries - 1:
+                    return sorted(all_chapters, key=lambda x: x.get('published', ''), reverse=True)
+
+        return sorted(all_chapters, key=lambda x: x.get('published', ''), reverse=True)
 
     def update_button_state(self):
         selected_items = self.profile_list.selectedItems()
@@ -545,55 +574,21 @@ class KemonoWebnovelDownloader(QMainWindow):
         QTimer.singleShot(100, lambda: self.start_fetching(popup, feed_url))
 
     def start_fetching(self, popup, feed_url):
-        all_chapters = []
-        offset = 0
-        max_retries = 3
-
         try:
-            while True:
-                if self.stop_fetching:
-                    print("Fetching canceled.")
-                    break
+            response = requests.get(feed_url)
+            response.raise_for_status()
+            chapters = response.json()
+            print(f"Fetched {len(chapters)} chapters. Total: {len(chapters)}")
 
-                paginated_url = f"{feed_url}?o={offset}" if self.paginate_chapters else feed_url
-                print(f"Fetching URL: {paginated_url}")
+            # Update UI after fetching
+            popup.progress_label.setText(f"{len(chapters)} chapters fetched")
+            QApplication.processEvents()
 
-                for attempt in range(max_retries + 1):
-                    if self.stop_fetching:
-                        print("Fetch stopped during retry.")
-                        break
+            self.chapters_fetched(chapters)
 
-                    try:
-                        response = requests.get(paginated_url)
-                        response.raise_for_status()
-
-                        data = response.json()
-                        if not data:  # No more chapters returned
-                            print("No more chapters to fetch.")
-                            self.chapters_fetched(all_chapters)
-                            return
-
-                        all_chapters.extend(data)
-                        print(f"Fetched {len(data)} chapters. Total: {len(all_chapters)}")
-
-                        # Update UI after each successful fetch
-                        popup.progress_label.setText(f"{len(all_chapters)} chapters fetched")
-                        QApplication.processEvents()
-
-                        if not self.paginate_chapters:  
-                            self.chapters_fetched(all_chapters)
-                            return
-
-                        offset += 50  # Move to the next batch of chapters
-                        break
-
-                    except requests.exceptions.RequestException as e:
-                        print(f"Error fetching chapters: {e}")
-                        if attempt == max_retries:
-                            QMessageBox.critical(self, "Error", f"Failed to fetch chapters: {e}")
-                            return
-                        time.sleep(1 * (2 ** attempt))  # Exponential backoff
-                        QApplication.processEvents()  # Process events even during retries
+        except requests.exceptions.RequestException as e:
+            print(f"Error fetching chapters: {e}")
+            self.chapters_error(f"Failed to fetch chapters: {e}")
 
         finally:
             self.is_fetching = False
@@ -695,11 +690,19 @@ class KemonoWebnovelDownloader(QMainWindow):
         book.add_item(epub.EpubNav())
         book.spine = ['nav'] + epub_chapters
 
-        directory = self.profiles[profile_url].get('directory', self.output_directory)  
-        filename = f"{self.sanitize_filename(filename)}.epub"
-        filepath = os.path.join(directory, filename)
-        epub.write_epub(filepath, book)
-        return filepath
+        # Check webhook switch
+        if self.webhook_switch.isChecked():
+            # Temporary file storage to send to Discord webhook
+            temp_filepath = os.path.join(os.getcwd(), f"{self.sanitize_filename(filename)}.epub")
+            epub.write_epub(temp_filepath, book)
+            return temp_filepath
+        else:
+            # Save locally in the directory
+            directory = self.profiles[profile_url].get('directory', self.output_directory)  
+            filename = f"{self.sanitize_filename(filename)}.epub"
+            filepath = os.path.join(directory, filename)
+            epub.write_epub(filepath, book)
+            return filepath
 
     def load_profiles(self):
         try:
@@ -954,6 +957,8 @@ class KemonoWebnovelDownloader(QMainWindow):
         try:
             print(f"Displaying preview for {len(chapters)} chapters.")  # Debug log
             self.current_chapters = chapters
+            self.current_offset = 0  # Initialize offset for pagination
+            self.current_url = None  # URL of the currently previewed profile
 
             if not chapters:
                 QMessageBox.critical(self, "Error", "No chapters found for this profile.")
@@ -973,21 +978,19 @@ class KemonoWebnovelDownloader(QMainWindow):
                 print("Profile not found.")  # Debug log
                 return
 
-            last_fetched = profile.get("last_fetched", "")
-            for chapter in chapters:
-                chapter['is_new'] = chapter['published'] > last_fetched
+            # Prepare the preview window
+            self.preview_window = QDialog(self)
+            self.preview_window.setWindowTitle("Chapter Preview")
+            self.preview_window.setModal(True)
+            self.preview_window.resize(500, 500)
 
-            preview_window = QDialog(self)
-            preview_window.setWindowTitle("Chapter Preview")
-            preview_window.setModal(True)
-            preview_window.resize(600, 400)
+            layout = QVBoxLayout(self.preview_window)
 
-            layout = QVBoxLayout(preview_window)
-
-            tree = QTreeWidget()
-            tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-            tree.setHeaderLabels(["Title", "Published Date"])
-            tree.setStyleSheet("""
+            # Tree widget for displaying chapters
+            self.tree = QTreeWidget()
+            self.tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)  # Changed here
+            self.tree.setHeaderLabels(["Title", "Published Date"])
+            self.tree.setStyleSheet("""
                 QTreeWidget::item:selected {
                     background: #3470e6;
                     color: white;
@@ -1000,36 +1003,105 @@ class KemonoWebnovelDownloader(QMainWindow):
                     color: white;
                 }
             """)
-            layout.addWidget(tree)
             
             def adjust_column_widths():
-                total_width = tree.width() - 2  # -2 for possible border or margin
-                tree.setColumnWidth(0, total_width // 2)  # Title
-                tree.setColumnWidth(1, total_width // 2)  # Published Date
+                total_width = self.tree.width() - 25
+                self.tree.setColumnWidth(0, total_width // 2)  # Title
+                self.tree.setColumnWidth(1, total_width // 2)  # Published Date
 
             # Use a timer to adjust widths when the dialog is shown
             QTimer.singleShot(100, adjust_column_widths)  # Adjust once when the dialog is shown
 
-            
             # Populate the tree widget
             for chapter in chapters:
                 item = QTreeWidgetItem([chapter['title'], chapter['published']])
                 if chapter.get('is_new'):
                     item.setBackground(0, QColor(144, 238, 144))  # Highlight new chapters
-                tree.addTopLevelItem(item)
+                self.tree.addTopLevelItem(item)
+            
+            layout.addWidget(self.tree)
 
-            # Download Button
+            # Buttons for loading additional chapters
+            button_layout = QHBoxLayout()
+
+            load_next_button = QPushButton("Load Next 50 Chapters")
+            load_next_button.clicked.connect(self.load_next_50_chapters)
+            button_layout.addWidget(load_next_button)
+
+            load_all_button = QPushButton("Load All Chapters")
+            load_all_button.clicked.connect(self.load_all_chapters)
+            button_layout.addWidget(load_all_button)
+
+            layout.addLayout(button_layout)
+
+            # Download button
             download_button = QPushButton("Download")
             download_button.clicked.connect(self.save_and_edit_metadata)
             layout.addWidget(download_button)
 
-            preview_window.exec()
-            
+            self.preview_window.exec()
+
         except Exception as e:
             print(f"Error in preview_chapters_with_data: {e}")
             import traceback
             traceback.print_exc()
             
+    def add_chapters_to_preview(self, chapters):
+        for chapter in chapters:
+            item = QTreeWidgetItem([chapter['title'], chapter['published']])
+            self.tree.addTopLevelItem(item)
+
+    def load_next_50_chapters(self):
+        if not self.current_url:
+            print("No profile URL found for loading next chapters.")
+            return
+
+        self.current_offset += 50  # Increment offset
+        paginated_url = f"{self.current_url}?o={self.current_offset}"
+
+        try:
+            response = requests.get(paginated_url)
+            response.raise_for_status()
+            new_chapters = response.json()
+
+            if not new_chapters:
+                QMessageBox.information(self.preview_window, "Info", "No more chapters to load.")
+                self.current_offset -= 50  # Revert offset if no new chapters
+                return
+
+            self.current_chapters.extend(new_chapters)  # Add new chapters to the current list
+            self.add_chapters_to_preview(new_chapters)  # Update the preview dynamically
+            print(f"Loaded next 50 chapters. Total chapters: {len(self.current_chapters)}.")
+
+        except requests.exceptions.RequestException as e:
+            QMessageBox.critical(self.preview_window, "Error", f"Failed to load next chapters: {e}")
+            
+    def load_all_chapters(self):
+        if not self.current_url:
+            print("No profile URL found for loading all chapters.")
+            return
+
+        while True:
+            self.current_offset += 50
+            paginated_url = f"{self.current_url}?o={self.current_offset}"
+
+            try:
+                response = requests.get(paginated_url)
+                response.raise_for_status()
+                new_chapters = response.json()
+
+                if not new_chapters:
+                    QMessageBox.information(self.preview_window, "Info", "All chapters have been loaded.")
+                    return
+
+                self.current_chapters.extend(new_chapters)  # Add new chapters to the current list
+                self.add_chapters_to_preview(new_chapters)  # Update the preview dynamically
+                print(f"Loaded 50 more chapters. Total chapters: {len(self.current_chapters)}.")
+
+            except requests.exceptions.RequestException as e:
+                QMessageBox.critical(self.preview_window, "Error", f"Failed to load chapters: {e}")
+                break
+
     def save_and_edit_metadata(self):
         selected_items = self.sender().parent().findChild(QTreeWidget).selectedItems()
         if not selected_items:
@@ -1090,11 +1162,21 @@ class KemonoWebnovelDownloader(QMainWindow):
 
     def save_metadata_and_download(self, window, title_entry, author_entry, filename_entry, chapters):
         new_title = title_entry.text()
-        new_author = author_entry.text()
+        new_author = title_entry.text()
         new_filename = filename_entry.text()
-        filepath = self.create_epub(chapters, new_title, new_author, self.current_url, new_filename)
-        QMessageBox.information(self, "Success", f"EPUB created at: {filepath}")
-        self.profiles[self.current_url]["last_fetched"] = max(chap['published'] for chap in chapters)
+
+        # Create the EPUB
+        epub_filepath = self.create_epub(chapters, new_title, new_author, self.current_url, new_filename)
+        
+        if self.webhook_switch.isChecked():
+            # Send to Discord webhook and delete temporary file after upload
+            self.send_epub_to_discord(epub_filepath, self.profiles[self.current_url])
+        else:
+            # Notify the user that the EPUB has been saved locally
+            QMessageBox.information(self, "Success", f"EPUB created at: {epub_filepath}")
+
+        # Update `last_fetched` after creating/sending the EPUB
+        self.profiles[self.current_url]["last_fetched"] = max(chap["published"] for chap in chapters)
         self.save_profiles()
         window.accept()
 
