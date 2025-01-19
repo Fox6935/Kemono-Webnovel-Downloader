@@ -1,4 +1,4 @@
-from PyQt6.QtWidgets import QMainWindow, QApplication, QVBoxLayout, QHBoxLayout, QWidget, QPushButton, QTreeWidget, QTreeWidgetItem, QLabel, QCheckBox, QMenu, QFileDialog, QDialog, QMessageBox, QFormLayout, QLineEdit, QProgressDialog, QAbstractItemView
+from PyQt6.QtWidgets import QMainWindow, QApplication, QVBoxLayout, QHBoxLayout, QWidget, QPushButton, QTreeWidget, QTreeWidgetItem, QLabel, QCheckBox, QMenu, QFileDialog, QDialog, QMessageBox, QFormLayout, QLineEdit, QProgressDialog, QAbstractItemView, QButtonGroup, QGridLayout
 from PyQt6.QtCore import Qt, QSize, QTimer, QTime, QCoreApplication, QEvent, QRect, pyqtProperty, QPropertyAnimation, QPoint, QEasingCurve
 from PyQt6.QtGui import QIcon, QFont, QPalette, QColor, QAction, QFontMetrics, QPainter, QPainterPath, QBrush, QPen
 import json
@@ -96,6 +96,54 @@ class QToggleAutomatic(QTogglePagination):
     def __init__(self, parent=None):
         super().__init__(parent)
 
+class LoginWindow(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Login to Kemono")
+        self.setModal(True)
+        self.resize(300, 150)
+
+        layout = QVBoxLayout(self)
+
+        # Username input
+        username_label = QLabel("Username:")
+        self.username_input = QLineEdit()
+        layout.addWidget(username_label)
+        layout.addWidget(self.username_input)
+
+        # Password input
+        password_label = QLabel("Password:")
+        self.password_input = QLineEdit()
+        self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
+        layout.addWidget(password_label)
+        layout.addWidget(self.password_input)
+
+        # Buttons
+        button_layout = QHBoxLayout()
+        self.login_button = QPushButton("Login")
+        self.cancel_button = QPushButton("Cancel")
+        button_layout.addWidget(self.login_button)
+        button_layout.addWidget(self.cancel_button)
+        layout.addLayout(button_layout)
+
+        # Connect buttons
+        self.login_button.clicked.connect(self.attempt_login)
+        self.cancel_button.clicked.connect(self.reject)
+
+    def attempt_login(self):
+        username = self.username_input.text().strip()
+        password = self.password_input.text().strip()
+
+        if not username or not password:
+            QMessageBox.warning(self, "Error", "Please enter both username and password.")
+            return
+
+        success = self.parent().login_to_kemono(username, password)
+        if success:
+            self.accept()  # This will close the login window
+        else:
+            QMessageBox.critical(self, "Error", "Login failed. Please check your credentials.")
+
 class KemonoWebnovelDownloader(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -146,31 +194,102 @@ class KemonoWebnovelDownloader(QMainWindow):
                 font-size: 13px;  /* Match with general font size */
             }
         """)
-        
-        # Initialize PyQt equivalents of the variables
-        self.profiles = self.load_profiles()
-        self.profile_directories = {}  # New dictionary to store custom directories
-        self.output_directory = os.getcwd()
 
+        # Initialize all variables that might be needed during setup_ui or load_defaults
+        self.default_directory = os.getcwd()
+        self.default_webhook_url = ''
+        self.output_directory = self.default_directory  # Set a default, will be updated by load_defaults
+        self.automatic_mode = False  # Needed for UI setup
+        self.cookies = {}  # Default empty cookies
+        self.logged_in = False  # Default not logged in
+        self.profiles = {}  # Default empty profiles
+
+        # Initialize timer_label before setup_ui is called
+        self.timer_label = QLabel("00:00")
+
+        # Setup UI - this will create UI elements that might need the above variables
+        self.setup_ui(layout)
+
+        # Load session after UI setup but before loading profiles
+        self.cookies = self.load_session() or self.cookies
+        self.logged_in = bool(self.cookies)
+
+        # Load defaults after UI setup so we can adjust UI elements like webhook_switch
+        self.load_defaults()
+        self.output_directory = self.default_directory  # Update with loaded defaults
+
+        # Load profiles - now that defaults are loaded and UI is set up
+        self.profiles = self.load_profiles()
+        self.update_profile_list()
+
+        # Initialize other variables that don't affect the initial setup
+        self.profile_directories = {}
         self.is_fetching = False
         self.stop_fetching = False
         self.current_chapters = []
         self.current_url = ""
-        
         self.automatic_mode_running = False
         self.timer_start_time = None
-        self.timer_label = QLabel("00:00")
-        self.automatic_mode = False
         self.sleep_time_seconds = 1800  # Change this value for a different "automatic mode" time interval
-        
-        # Setup UI
-        self.setup_ui(layout)
+
+        # Update UI for login if logged in - called after all initializations
+        if self.logged_in:
+            self.update_ui_for_login()
 
     def setup_ui(self, layout):
         # Main layout
         main_layout = QVBoxLayout()
         main_layout.setSpacing(10)
         layout.addLayout(main_layout)
+        
+        # Create a layout for buttons at the top
+        top_controls_layout = QHBoxLayout()
+        main_layout.addLayout(top_controls_layout)
+
+        # Common style for both buttons
+        button_style = """
+            QPushButton {
+                background-color: #000000;
+                color: white;
+                border: none;
+                padding: 7px 20px; /* Adjust padding for size */
+                text-align: center;
+                text-decoration: none;
+                font-size: 14px;
+                border-radius: 5px;
+            }
+            QPushButton:hover {
+                background-color: #5b5b5b;
+            }
+        """
+
+        # Defaults button on the left
+        defaults_button = QPushButton("Defaults")
+        defaults_button.setStyleSheet(button_style)
+        defaults_button.clicked.connect(self.open_defaults_window)
+        top_controls_layout.addWidget(defaults_button)
+
+        # Refresh button in the middle
+        refresh_button = QPushButton("Refresh")
+        refresh_button.setStyleSheet(button_style)
+        refresh_button.clicked.connect(self.refresh)
+        top_controls_layout.addWidget(refresh_button)
+
+        # Add stretch to push buttons apart
+        top_controls_layout.addStretch(1)
+
+        # Login button on the right
+        self.login_button = QPushButton("Login")
+        self.login_button.setStyleSheet(button_style)
+        self.login_button.clicked.connect(self.open_login_window)
+        top_controls_layout.addWidget(self.login_button)
+
+        # Logout button, initially hidden
+        self.logout_button = QPushButton("Logout")
+        self.logout_button.setStyleSheet(button_style)
+        self.logout_button.clicked.connect(self.logout)
+        self.logout_button.setVisible(False)
+        top_controls_layout.addWidget(self.logout_button)
 
         # Profile List
         self.profile_list = QTreeWidget()
@@ -216,26 +335,15 @@ class KemonoWebnovelDownloader(QMainWindow):
         self.automatic_mode_switch.toggled.connect(self.toggle_automatic_mode)
         automatic_layout.addWidget(self.automatic_mode_switch)
         
-        # Ensure the timer label is still in the layout
-        self.timer_label = QLabel("00:00")
+        # Timer label is already initialized in __init__, just add it here.
         automatic_layout.addWidget(self.timer_label)
-        
-        # Webhook Input Section
-        webhook_layout = QVBoxLayout()
-        webhook_label = QLabel("Discord Webhook (Optional):")
-        self.webhook_input = QLineEdit()
-        self.webhook_input.setPlaceholderText("Enter Discord webhook URL")
-        self.webhook_input.textChanged.connect(self.toggle_webhook_switch_visibility)
-        webhook_layout.addWidget(webhook_label)
-        webhook_layout.addWidget(self.webhook_input)
-        layout.addLayout(webhook_layout)
 
         # Webhook Toggle Switch (initially hidden)
         self.webhook_switch = QToggleAutomatic(self)
         self.webhook_switch.setText("Send to Discord Webhook")
         self.webhook_switch.setChecked(False)
-        self.webhook_switch.setVisible(False)
-        webhook_layout.addWidget(self.webhook_switch)
+        self.webhook_switch.setVisible(False)  # Initially hidden
+        main_layout.addWidget(self.webhook_switch)
 
         # Buttons layout
         button_layout = QHBoxLayout()
@@ -262,7 +370,216 @@ class KemonoWebnovelDownloader(QMainWindow):
         # Start automatic mode if it's on at startup
         if self.automatic_mode:
             self.start_automatic_mode()
+
+    def login_to_kemono(self, username, password):
+        url = "https://kemono.su/api/v1/authentication/login"
+        headers = {
+            "accept": "application/json",
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
+        }
+        data = {
+            "username": username,
+            "password": password
+        }
+
+        try:
+            response = requests.post(url, headers=headers, json=data)
+            response.raise_for_status()
+
+            # Debugging response details
+            print(f"Response headers: {response.headers}")
+            print(f"Response cookies: {response.cookies.get_dict()}")
+            print(f"Response content: {response.json()}")
+
+            # Manually extract the session cookie from the Set-Cookie header
+            cookies = response.cookies.get_dict()
+            if not cookies.get("session"):
+                # Parse the Set-Cookie header for the session cookie
+                set_cookie_header = response.headers.get("Set-Cookie", "")
+                for cookie in set_cookie_header.split(","):
+                    if "session=" in cookie:
+                        session_value = cookie.split("session=")[-1].split(";")[0]
+                        cookies["session"] = session_value
+                        break
+
+            if "session" in cookies:
+                self.save_session(cookies)  # Save the session for future use
+                time.sleep(1)
+                self.logged_in = True
+                self.update_ui_for_login()
+                QMessageBox.information(self, "Success", "Logged in successfully!")
+                return True
+            else:
+                print("Login successful, but no session cookie was extracted.")
+                QMessageBox.critical(self, "Error", "Login failed due to missing session cookie.")
+                return False
+        except requests.exceptions.RequestException as e:
+            print(f"Login failed: {e}")
+            if e.response is not None:
+                print(f"Response content: {e.response.text}")
+            QMessageBox.critical(self, "Error", "Login failed. Please check your credentials.")
+            return False
+            
+    def open_login_window(self):
+        login_window = LoginWindow(self)
+        login_window.exec()
+
+    def save_session(self, cookies):
+        with open("session.json", "w") as file:
+            json.dump(cookies, file)
+        print("Session saved successfully.")
+
+    def load_session(self):
+        try:
+            with open("session.json", "r") as file:
+                cookies = json.load(file)
+                print("Session loaded successfully.")
+                return cookies
+        except FileNotFoundError:
+            print("No session file found.")
+            return None
+
+    def logout(self):
+        try:
+            os.remove("session.json")
+        except FileNotFoundError:
+            pass
+        self.logged_in = False
+        self.update_ui_for_logout()
+        QMessageBox.information(self, "Logged Out", "You have been logged out.")
+
+    def update_ui_for_login(self):
+        self.login_button.setVisible(False)
+        self.logout_button.setVisible(True)
+        self.profiles = self.load_profiles()  # This now uses preferences.json if logged in
+        self.update_profile_list()
+        if self.logged_in:  # Save preferences after successful login
+            self.save_preferences()
+
+    def update_ui_for_logout(self):
+        self.login_button.setVisible(True)
+        self.logout_button.setVisible(False)
+        self.profiles = self.load_profiles()  # This will now use profiles.json
+        self.update_profile_list()
+
+    def refresh(self):
+        if self.logged_in:
+            # Reload session
+            self.cookies = self.load_session() or {}
+            if not self.cookies:
+                self.logged_in = False
+                self.update_ui_for_logout()
+                QMessageBox.warning(self, "Session Expired", "Your session has expired. Please log in again.")
+            else:
+                # Refresh profiles from API and update preferences.json
+                try:
+                    self.profiles = self.load_preferences_from_api()
+                    self.save_preferences()  # Save the updated preferences back to preferences.json
+                    QMessageBox.information(self, "Success", "Session and profiles refreshed from API.")
+                except requests.exceptions.RequestException as e:
+                    QMessageBox.critical(self, "Error", f"Failed to refresh from API: {e}")
+        else:
+            # Refresh profiles from profiles.json
+            try:
+                self.profiles = self.load_profiles_from_json()
+                # No need to save since we're just reloading from the same file
+                QMessageBox.information(self, "Success", "Profiles refreshed from JSON.")
+            except json.JSONDecodeError as e:
+                QMessageBox.critical(self, "Error", f"Failed to refresh from JSON: {e}")
         
+        # Update UI to reflect changes
+        self.update_profile_list()
+
+    def fetch_from_kemono(self, url):
+        try:
+            response = requests.get(url, cookies=self.cookies)
+            if response.status_code == 401:
+                self.handle_session_expiry()
+                return None
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            print(f"Failed to fetch data: {e}")
+            return None
+            
+    def load_defaults(self):
+        try:
+            with open('defaults.json', 'r') as file:
+                defaults = json.load(file)
+                self.default_directory = defaults.get('directory', '')
+                if not self.default_directory:  # If directory is empty string or not set
+                    self.default_directory = os.getcwd()  # Use current directory
+                self.default_webhook_url = defaults.get('webhook_url', '')
+                if self.is_valid_webhook_url(self.default_webhook_url):
+                    self.webhook_switch.setVisible(True)
+                else:
+                    self.webhook_switch.setVisible(False)
+        except FileNotFoundError:
+            print("Defaults file not found, using current settings.")
+            self.default_directory = os.getcwd()
+            self.default_webhook_url = ''
+            self.webhook_switch.setVisible(False)
+        except json.JSONDecodeError:
+            print("Error decoding defaults.json. Using default values.")
+            self.default_directory = os.getcwd()
+            self.default_webhook_url = ''
+            self.webhook_switch.setVisible(False)
+
+    def open_defaults_window(self):
+        defaults_window = QDialog(self)
+        defaults_window.setWindowTitle("Defaults")
+        defaults_window.setModal(True)
+        defaults_window.resize(350, 200)
+
+        layout = QVBoxLayout(defaults_window)
+        form_layout = QFormLayout()
+
+        # Directory
+        directory_input = QLineEdit(self.default_directory if self.default_directory is not None else '')
+        browse_button = QPushButton("Browse")
+        browse_button.clicked.connect(lambda: self.select_directory(directory_input))
+        directory_layout = QHBoxLayout()
+        directory_layout.addWidget(directory_input)
+        directory_layout.addWidget(browse_button)
+        form_layout.addRow("Directory:", directory_layout)
+
+        # Webhook URL
+        webhook_input = QLineEdit(self.default_webhook_url)
+        form_layout.addRow("Webhook URL:", webhook_input)
+        
+        layout.addLayout(form_layout)
+
+        # Save button
+        save_button = QPushButton("Save Defaults")
+        save_button.clicked.connect(lambda: self.save_defaults(directory_input.text(), webhook_input.text()))
+        layout.addWidget(save_button)
+
+        defaults_window.exec()
+
+    def save_defaults(self, directory, webhook_url):
+        defaults = {
+            'directory': directory if directory else '',
+            'webhook_url': webhook_url
+        }
+        with open('defaults.json', 'w') as file:
+            json.dump(defaults, file, indent=4)
+
+        # Reload the defaults immediately after saving
+        self.load_defaults()
+
+        # Validate webhook URL
+        if self.is_valid_webhook_url(webhook_url):
+            self.webhook_switch.setVisible(True)
+        else:
+            self.webhook_switch.setVisible(False)
+
+        QMessageBox.information(self, "Success", "Defaults saved successfully.")
+
+    def handle_session_expiry(self):
+        QMessageBox.warning(self, "Session Expired", "Your session has expired. Please log in again.")
+        self.logout()
+
     def is_valid_webhook_url(self, url):
         return re.match(r"^https://discord.com/api/webhooks/\d+/[\w-]+$", url) is not None
 
@@ -273,34 +590,67 @@ class KemonoWebnovelDownloader(QMainWindow):
         else:
             self.webhook_switch.setVisible(False)
 
-    def send_epub_to_discord(self, epub_filepath, profile):
-        webhook_url = self.webhook_input.text().strip()
-        if not webhook_url:
-            print("No webhook URL provided.")
-            return
+    def send_epub_to_discord(self, epub_filepath, profile, force_send=False):
+        if force_send or self.webhook_switch.isChecked():
+            webhook_url = self.default_webhook_url.strip()
+            if not webhook_url:
+                print("No webhook URL provided.")
+                return
 
-        # Use the `with` statement to ensure the file is closed after reading
-        with open(epub_filepath, 'rb') as file:
-            files = {
-                'file': (os.path.basename(epub_filepath), file, 'application/epub+zip'),
-            }
-            payload = {
-                'content': f"New EPUB for **{profile['title']}** by {profile['author']}.",
-            }
-            try:
-                response = requests.post(webhook_url, data=payload, files=files)
-                response.raise_for_status()
-                print(f"Successfully sent EPUB '{os.path.basename(epub_filepath)}' to Discord.")
-            except requests.exceptions.RequestException as e:
-                print(f"Failed to send EPUB '{os.path.basename(epub_filepath)}' to Discord: {e}")
-
-        # Ensure the file handle is closed before attempting to delete the file
-        try:
-            self.safe_delete(epub_filepath)
-            print(f"Temporary file '{epub_filepath}' deleted.")
-        except PermissionError as e:
-            print(f"Failed to delete temporary file '{epub_filepath}': {e}")
+            # Use the `with` statement to ensure the file is closed after reading
+            with open(epub_filepath, 'rb') as file:
+                files = {
+                    'file': (os.path.basename(epub_filepath), file, 'application/epub+zip'),
+                }
+                payload = {
+                    'content': f"New EPUB for **{profile['title']}** by {profile['author']}.",
+                }
+                try:
+                    response = requests.post(webhook_url, data=payload, files=files)
+                    response.raise_for_status()
+                    print(f"Successfully sent EPUB '{os.path.basename(epub_filepath)}' to Discord.")
+                except requests.exceptions.RequestException as e:
+                    print(f"Failed to send EPUB '{os.path.basename(epub_filepath)}' to Discord: {e}")
             
+            # Ensure the file handle is closed before attempting to delete the file
+            try:
+                self.safe_delete(epub_filepath)
+                print(f"Temporary file '{epub_filepath}' deleted.")
+            except PermissionError as e:
+                print(f"Failed to delete temporary file '{epub_filepath}': {e}")
+        else:
+            print("Webhook sending is disabled.")
+        
+    def send_notification_to_discord(self, profile, new_chapters, force_send=False):
+        print(f"Force send: {force_send}, Toggle checked: {self.webhook_switch.isChecked()}")
+        if force_send or self.webhook_switch.isChecked():
+            webhook_url = self.default_webhook_url.strip()
+            if not webhook_url:
+                print("No webhook URL provided.")
+                return
+
+        # Convert API URL to display URL
+        original_url = next((key for key, val in self.profiles.items() if val.get('title') == profile['title'] and val.get('author') == profile['author']), None)
+        if original_url:
+            display_url = original_url.replace('/api/v1/', '/')
+        else:
+            print("Could not find matching profile URL.")
+            display_url = "URL not found"
+
+        # Create the message content
+        content = f"**[{profile['author']}](<{display_url}>)** has been updated with {len(new_chapters)} new posts."
+
+        payload = {
+            'content': content
+        }
+
+        try:
+            response = requests.post(webhook_url, json=payload)
+            response.raise_for_status()
+            print(f"Successfully sent notification for {len(new_chapters)} new chapters to Discord.")
+        except requests.exceptions.RequestException as e:
+            print(f"Failed to send notification to Discord: {e}")
+
     def safe_delete(self, filepath, retries=3, delay=1):
         for attempt in range(retries):
             try:
@@ -345,7 +695,11 @@ class KemonoWebnovelDownloader(QMainWindow):
             
             # Update `last_fetched` and save profiles
             profile["last_fetched"] = max(chap["published"] for chap in new_chapters)
-            self.save_profiles()
+            if self.logged_in:
+                profile['AMU'] = profile['updated']  # Update AMU
+                self.save_preferences()
+            else:
+                self.save_profiles()
         else:
             QMessageBox.information(self, "Info", "No new chapters to download.")
 
@@ -362,6 +716,7 @@ class KemonoWebnovelDownloader(QMainWindow):
     def start_automatic_mode(self):
         self.automatic_mode_running = True
         self.automatic_fetch_cycle()
+        self.update_timer()
 
     def stop_automatic_mode(self):
         self.automatic_mode_running = False
@@ -369,27 +724,68 @@ class KemonoWebnovelDownloader(QMainWindow):
     def automatic_fetch_cycle(self):
         if not self.automatic_mode_running:
             return
+        if self.logged_in:
+            self.sleep_time_seconds = 300  # 5 minutes for logged in users
         popup = self.show_loading_popup_with_cancel()
         QTimer.singleShot(100, lambda: self.perform_automatic_fetch(popup))
 
     def perform_automatic_fetch(self, popup):
-        for url, profile in self.profiles.items():
-            if not self.automatic_mode_running or self.stop_fetching:
-                popup.close()
-                return
-            if profile.get('opt_in_for_automatic_mode', False):
-                try:
-                    self.fetch_new_chapters(url, profile)
-                except Exception as e:
-                    print(f"Error fetching chapters for {profile['title']}: {e}")
-                QApplication.processEvents()  # Keep UI responsive
+        if self.logged_in:
+            profiles_to_update = []
+            try:
+                # Fetch favorites list to compare timestamps
+                url = "https://kemono.su/api/v1/account/favorites?type=artist"
+                response = requests.get(url, cookies=self.cookies)
+                response.raise_for_status()
+                latest_favorites = response.json()
                 
-                # Delay between requests
-                time.sleep(3)  # Adjust delay as needed
+                for api_profile in latest_favorites:
+                    profile_url = f"https://kemono.su/api/v1/{api_profile['service']}/user/{api_profile['id']}/"
+                    local_profile = self.profiles.get(profile_url)
+                    if local_profile and local_profile.get('automatic_mode') != 'ignore':
+                        api_updated = api_profile.get('updated', '')
+                        local_amu = local_profile.get('AMU', '')
+                        if api_updated > local_amu:
+                            profiles_to_update.append(profile_url)
                 
-                if self.stop_fetching:
+                for url in profiles_to_update:
+                    if not self.automatic_mode_running or self.stop_fetching:
+                        popup.close()
+                        return
+                    profile = self.profiles[url]
+                    try:
+                        self.fetch_new_chapters(url, profile)
+                        # Delay only if chapters were fetched
+                        time.sleep(3)  # Adjust delay as needed
+                    except Exception as e:
+                        print(f"Error fetching chapters for {profile['title']}: {e}")
+                    QApplication.processEvents()  # Keep UI responsive
+                    
+                    # Update AMU after fetching
+                    profile['AMU'] = profile['updated']
+                    self.save_preferences()  # Since we know we're logged in, directly save preferences
+                    
+            except requests.exceptions.RequestException as e:
+                print(f"Failed to fetch favorites list: {e}")
+
+        else:  # Logged out mode remains the same
+            for url, profile in self.profiles.items():
+                if not self.automatic_mode_running or self.stop_fetching:
                     popup.close()
                     return
+                if profile.get('automatic_mode') != 'ignore':
+                    try:
+                        self.fetch_new_chapters(url, profile)
+                        # Delay only if chapters were fetched
+                        time.sleep(3)  # Adjust delay as needed
+                    except Exception as e:
+                        print(f"Error fetching chapters for {profile['title']} (logged out): {e}")
+                    QApplication.processEvents()  # Keep UI responsive
+                    
+                    if self.stop_fetching:
+                        popup.close()
+                        return
+
         popup.close()
         self.timer_start_time = datetime.now() + timedelta(seconds=self.sleep_time_seconds)
         self.update_timer()
@@ -399,7 +795,6 @@ class KemonoWebnovelDownloader(QMainWindow):
             if self.timer_start_time is None:
                 self.timer_start_time = datetime.now() + timedelta(seconds=self.sleep_time_seconds)
             
-            # Convert datetime to QTime for comparison
             current_qtime = QTime.currentTime()
             target_qtime = QTime.fromString(self.timer_start_time.strftime("%H:%M:%S"))
             remaining = current_qtime.secsTo(target_qtime)
@@ -413,8 +808,10 @@ class KemonoWebnovelDownloader(QMainWindow):
                 minutes, seconds = divmod(remaining, 60)
                 self.timer_label.setText(f"{minutes:02d}:{seconds:02d}")
                 
-                # Use QTimer for scheduling updates
-                QTimer.singleShot(1000, self.update_timer)  # Update every second
+                # Schedule the next update
+                QTimer.singleShot(1000, self.update_timer)
+        else:
+            self.timer_label.setText("00:00")
 
     def generate_filename(self, chapters):
         lowermost_title = chapters[-1]['title']
@@ -431,17 +828,35 @@ class KemonoWebnovelDownloader(QMainWindow):
             print(f"No new chapters found for {profile['title']}.")  # Debug log
             return  # Exit early if no new chapters are found
 
-        if self.webhook_switch.isChecked():
-            filename = self.generate_filename(new_chapters)
-            filepath = self.create_epub(new_chapters, profile['title'], profile['author'], url, filename)
-            self.send_epub_to_discord(filepath, profile)  # Send the EPUB file to Discord webhook
-        else:
-            filename = self.generate_filename(new_chapters)
-            filepath = self.create_epub(new_chapters, profile['title'], profile['author'], url, filename)
+        auto_mode = profile.get('automatic_mode', 'ignore')
 
-        # Update `last_fetched` to the most recent chapter
-        profile["last_fetched"] = max(chap['published'] for chap in new_chapters)
-        self.save_profiles()
+        if auto_mode == 'ignore':
+            return
+
+        elif auto_mode == 'save_locally':
+            filename = self.generate_filename(new_chapters)
+            filepath = self.create_epub(new_chapters, profile['title'], profile['author'], url, filename)
+            print(f"EPUB saved locally at: {filepath}")
+
+        elif auto_mode == 'send_to_discord' or auto_mode == 'notification_only':
+            if self.is_valid_webhook_url(self.default_webhook_url):
+                if auto_mode == 'send_to_discord':
+                    filename = self.generate_filename(new_chapters)
+                    epub_filepath = self.create_epub(new_chapters, profile['title'], profile['author'], url, filename)
+                    self.send_epub_to_discord(epub_filepath, profile, force_send=True)  # Ensure force_send is True
+                else:  # notification_only
+                    self.send_notification_to_discord(profile, new_chapters, force_send=True)  # Ensure force_send is True
+            else:
+                print("Webhook URL not valid or not set for automatic mode; skipping Discord actions.")
+
+        # Update last_fetched only if a mode other than 'ignore' is selected
+        if new_chapters and auto_mode != 'ignore':
+            profile["last_fetched"] = max(chap['published'] for chap in new_chapters)
+            profile['AMU'] = profile['updated']  # Update AMU
+            if self.logged_in:
+                self.save_preferences()
+            else:
+                self.save_profiles()
 
     def fetch_kemono_chapters_silent(self, feed_url):
         try:
@@ -563,55 +978,6 @@ class KemonoWebnovelDownloader(QMainWindow):
         except requests.RequestException:
             return None
 
-    def fetch_kemono_chapters(self, feed_url):
-        self.is_fetching = True
-        self.stop_fetching = False
-
-        # Show a popup that can be cancelled
-        popup = self.show_loading_popup_with_cancel()
-
-        # Use a single shot timer to delay the fetch operation, allowing the UI to update
-        QTimer.singleShot(100, lambda: self.start_fetching(popup, feed_url))
-
-    def start_fetching(self, popup, feed_url):
-        try:
-            response = requests.get(feed_url)
-            response.raise_for_status()
-            chapters = response.json()
-            print(f"Fetched {len(chapters)} chapters. Total: {len(chapters)}")
-
-            # Update UI after fetching
-            popup.progress_label.setText(f"{len(chapters)} chapters fetched")
-            QApplication.processEvents()
-
-            self.chapters_fetched(chapters)
-
-        except requests.exceptions.RequestException as e:
-            print(f"Error fetching chapters: {e}")
-            self.chapters_error(f"Failed to fetch chapters: {e}")
-
-        finally:
-            self.is_fetching = False
-            if popup:
-                popup.close()  # Close the popup when done or cancelled
-
-    def chapters_fetched(self, chapters):
-        print(f"chapters_fetched called with {len(chapters)} chapters")  # Debug log
-        if not self.stop_fetching:  # Only update if not cancelled
-            print("Calling preview_chapters_with_data")  # Debug log
-            chapters = sorted(chapters, key=lambda x: x.get('published', ''), reverse=True)
-            QTimer.singleShot(100, lambda: self.preview_chapters_with_data(chapters))
-        else:
-            print("Fetching was cancelled before chapters could be processed.")  # Debug log
-
-    def chapters_error(self, error_message):
-        self.is_fetching = False
-        QTimer.singleShot(100, lambda: QMessageBox.critical(self, "Error", error_message))
-
-    def chapters_cancelled(self):
-        self.is_fetching = False
-        QTimer.singleShot(100, lambda: QMessageBox.information(self, "Info", "Chapter fetching was cancelled."))
-
     def show_loading_popup_with_cancel(self):
         popup = QDialog(self)
         popup.setWindowTitle("Loading")
@@ -698,20 +1064,69 @@ class KemonoWebnovelDownloader(QMainWindow):
             return temp_filepath
         else:
             # Save locally in the directory
-            directory = self.profiles[profile_url].get('directory', self.output_directory)  
+            profile = self.profiles[profile_url]
+            directory = profile.get('directory', self.default_directory)  # Use default if directory is empty or not set
+            if not directory:
+                directory = self.default_directory  # If it's an empty string, use default
             filename = f"{self.sanitize_filename(filename)}.epub"
             filepath = os.path.join(directory, filename)
             epub.write_epub(filepath, book)
             return filepath
 
     def load_profiles(self):
+        if self.logged_in:
+            return self.load_preferences_from_api()
+        else:
+            return self.load_profiles_from_json()
+
+    def load_preferences_from_api(self):
+        try:
+            url = "https://kemono.su/api/v1/account/favorites?type=artist"
+            response = requests.get(url, cookies=self.cookies)
+            response.raise_for_status()
+            profiles = response.json()
+            
+            # Load existing preferences
+            existing_preferences = self.load_preferences_json() or {}
+
+            preferences = {}
+            for profile in profiles:
+                profile_url = f"https://kemono.su/api/v1/{profile['service']}/user/{profile['id']}/"
+                # Merge default values with existing preferences if any
+                preferences[profile_url] = {
+                    "title": existing_preferences.get(profile_url, {}).get('title', profile.get('name', "Unknown Title")),
+                    "author": existing_preferences.get(profile_url, {}).get('author', profile.get('name', "Unknown Author")),
+                    "last_fetched": existing_preferences.get(profile_url, {}).get('last_fetched', profile.get('updated', "")),
+                    "directory": existing_preferences.get(profile_url, {}).get('directory', self.output_directory),
+                    "automatic_mode": existing_preferences.get(profile_url, {}).get('automatic_mode', 'ignore'),
+                    "updated": profile.get('updated', ""),
+                    "AMU": existing_preferences.get(profile_url, {}).get('AMU', "")
+                }
+            return preferences
+        except requests.exceptions.RequestException as e:
+            print(f"Failed to fetch favorites: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to fetch favorites. Please try again. Error: {e}")
+            return {}
+
+    def load_preferences_json(self):
+        try:
+            with open("preferences.json", "r") as file:
+                return json.load(file)
+        except FileNotFoundError:
+            return None
+        except json.JSONDecodeError as e:
+            print(f"JSON Decode Error for preferences.json: {e}")
+            return None
+
+    def load_profiles_from_json(self):
         try:
             with open("profiles.json", "r") as file:
                 data = json.load(file)
                 for url, profile in data.items():
-                    # Only update directory if it's not in the JSON
                     if 'directory' not in profile or not profile['directory']:
                         profile['directory'] = self.output_directory
+                    # Ensure automatic_mode exists with a default value
+                    profile['automatic_mode'] = profile.get('automatic_mode', 'ignore')
                 return data
         except FileNotFoundError:
             return {}
@@ -727,10 +1142,14 @@ class KemonoWebnovelDownloader(QMainWindow):
         with open("profiles.json", "w") as file:
             json.dump(self.profiles, file, indent=4)
 
+    def save_preferences(self):
+        with open("preferences.json", "w") as file:
+            json.dump(self.profiles, file, indent=4)
+
     def add_profile(self):
         add_window = QDialog(self)
         add_window.setWindowTitle("Add New Profile")
-        add_window.setModal(True)  # Similar to transient in Tkinter
+        add_window.setModal(True)
 
         # Calculate position relative to parent window
         parent_rect = self.frameGeometry()
@@ -745,7 +1164,12 @@ class KemonoWebnovelDownloader(QMainWindow):
             'title': QLineEdit(),
             'author': QLineEdit(),
             'directory': QLineEdit(),
-            'opt_in_for_automatic_mode': QCheckBox()
+            'automatic_mode_options': {
+                'ignore': QCheckBox("Ignore"),
+                'save_locally': QCheckBox("Save locally"),
+                'send_to_discord': QCheckBox("Send to discord"),
+                'notification_only': QCheckBox("Send notification only")
+            }
         }
 
         # Helper functions
@@ -753,27 +1177,66 @@ class KemonoWebnovelDownloader(QMainWindow):
             url = profile_data['url'].text()
             title = profile_data['title'].text()
             author = profile_data['author'].text()
-            directory = profile_data['directory'].text() or self.output_directory
-            opt_in_automatic = profile_data['opt_in_for_automatic_mode'].isChecked()
+            directory = profile_data['directory'].text().strip()  # Remove whitespace
+            if not directory:  # If directory is blank after stripping, consider it None
+                directory = None
             
             fixed_url = self.fix_link(url)
             if not fixed_url:
                 QMessageBox.critical(self, "Error", "Invalid or unrecognized URL.")
                 return
             
-            if fixed_url in self.profiles:
-                QMessageBox.warning(self, "Warning", "This profile already exists.")
-                return
+            # Check which automatic mode option is selected
+            auto_mode = None
+            for key, checkbox in profile_data['automatic_mode_options'].items():
+                if checkbox.isChecked():
+                    auto_mode = key
+                    break
+            if auto_mode is None:
+                auto_mode = 'ignore'  # Default to 'ignore' if no checkbox is checked
             
-            self.profiles[fixed_url] = {
-                "title": title if title else "Unknown Title", 
-                "author": author if author else "Unknown Author", 
-                "last_fetched": "", 
-                "directory": directory,
-                "opt_in_for_automatic_mode": opt_in_automatic
-            }
-            self.update_profile_list()
-            self.save_profiles()
+            if self.logged_in:
+                # Convert the URL to the format needed for favorites API
+                parts = fixed_url.split('/')
+                if len(parts) >= 6 and parts[3] == 'api' and parts[4] == 'v1' and parts[5] in ['patreon', 'fanbox', 'pixiv', 'fantia', 'dlsite', 'gumroad', 'subscribestar']:
+                    service = parts[5]
+                    if len(parts) >= 8 and parts[6] == 'user':
+                        creator_id = parts[7]
+                        favorites_url = f"https://kemono.su/api/v1/favorites/creator/{service}/{creator_id}"
+                        try:
+                            response = requests.post(
+                                favorites_url,
+                                headers={'accept': '*/*'},
+                                cookies=self.cookies
+                            )
+                            response.raise_for_status()
+                            # After adding, fetch updated favorites to ensure it's included
+                            self.profiles = self.load_profiles()
+                            self.update_profile_list()
+                            QMessageBox.information(self, "Success", "Creator added to favorites.")
+                        except requests.exceptions.RequestException as e:
+                            print(f"Failed to add to favorites: {e}")
+                            QMessageBox.critical(self, "Error", f"Failed to add creator to favorites: {e}")
+                    else:
+                        QMessageBox.critical(self, "Error", "URL does not specify a user.")
+                else:
+                    QMessageBox.critical(self, "Error", "URL does not match expected format for adding to favorites.")
+            else:
+                # Add to local profiles.json
+                if fixed_url in self.profiles:
+                    QMessageBox.warning(self, "Warning", "This profile already exists.")
+                    return
+                
+                self.profiles[fixed_url] = {
+                    "title": title if title else "Unknown Title", 
+                    "author": author if author else "Unknown Author", 
+                    "last_fetched": "", 
+                    "directory": directory if directory else '',  # Save empty string if directory is blank
+                    "automatic_mode": auto_mode
+                }
+                self.update_profile_list()
+                self.save_profiles()
+            
             add_window.accept()  # Closes the dialog
 
         # Form layout for entries
@@ -791,9 +1254,20 @@ class KemonoWebnovelDownloader(QMainWindow):
         
         layout.addLayout(form_layout)
 
-        # Automatic mode checkbox
-        layout.addWidget(QLabel("Automatic mode:"))
-        layout.addWidget(profile_data['opt_in_for_automatic_mode'])
+        # Automatic mode checkbox group
+        auto_mode_group = QButtonGroup(add_window)
+        auto_mode_layout = QGridLayout()
+        auto_mode_layout.addWidget(QLabel("Automatic mode:"), 0, 0, 1, 4, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        col = 0
+        for i, (key, checkbox) in enumerate(profile_data['automatic_mode_options'].items()):
+            checkbox.setChecked(key == 'ignore')  # Default to 'ignore'
+            auto_mode_layout.addWidget(checkbox, 1, col)
+            auto_mode_group.addButton(checkbox)
+            col += 1
+            checkbox.toggled.connect(lambda checked, cb=checkbox: [b.setChecked(False) for b in auto_mode_group.buttons() if b != cb] if checked else None)
+
+        layout.addLayout(auto_mode_layout)
 
         # Submit button
         submit_button = QPushButton("Submit")
@@ -839,22 +1313,45 @@ class KemonoWebnovelDownloader(QMainWindow):
             'title': QLineEdit(profile.get('title', "")),
             'author': QLineEdit(profile.get('author', "")),
             'directory': QLineEdit(profile.get('directory', self.output_directory)),
-            'opt_in_for_automatic_mode': QCheckBox()
+            'automatic_mode_options': {
+                'ignore': QCheckBox("Ignore"),
+                'save_locally': QCheckBox("Save locally"),
+                'send_to_discord': QCheckBox("Send to discord"),
+                'notification_only': QCheckBox("Send notification only")
+            }
         }
-        profile_data['opt_in_for_automatic_mode'].setChecked(profile.get('opt_in_for_automatic_mode', False))
+        for key, checkbox in profile_data['automatic_mode_options'].items():
+            checkbox.setChecked(profile.get('automatic_mode', 'ignore') == key)
+
+        # Disable URL editing when logged in
+        if self.logged_in:
+            profile_data['url'].setReadOnly(True)
+            profile_data['url'].setStyleSheet("color: gray;")  # Optional: make it visually clear it's not editable
 
         # Helper functions
         def update_profile():
             new_url = profile_data['url'].text()
             new_title = profile_data['title'].text()
             new_author = profile_data['author'].text()
-            new_directory = profile_data['directory'].text() or self.output_directory
-            opt_in_automatic = profile_data['opt_in_for_automatic_mode'].isChecked()
+            new_directory = profile_data['directory'].text().strip()  # Remove whitespace
             
-            new_fixed_url = self.fix_link(new_url)
-            if not new_fixed_url:
-                QMessageBox.critical(self, "Error", "Invalid or unrecognized URL.")
-                return
+            # Check which automatic mode option is selected
+            auto_mode = None
+            for key, checkbox in profile_data['automatic_mode_options'].items():
+                if checkbox.isChecked():
+                    auto_mode = key
+                    break
+            if auto_mode is None:
+                auto_mode = 'ignore'  # Default to 'ignore' if no checkbox is checked
+
+            if self.logged_in:
+                # URL cannot be changed, so we keep the original URL
+                new_fixed_url = url
+            else:
+                new_fixed_url = self.fix_link(new_url)
+                if not new_fixed_url:
+                    QMessageBox.critical(self, "Error", "Invalid or unrecognized URL.")
+                    return
 
             if new_fixed_url != url and new_fixed_url in self.profiles:
                 QMessageBox.warning(self, "Warning", "This profile URL already exists.")
@@ -867,19 +1364,22 @@ class KemonoWebnovelDownloader(QMainWindow):
                     "title": new_title if new_title else "Unknown Title", 
                     "author": new_author if new_author else "Unknown Author", 
                     "last_fetched": last_fetched, 
-                    "directory": new_directory,
-                    "opt_in_for_automatic_mode": opt_in_automatic
+                    "directory": new_directory if new_directory else '',  # Save empty string if directory is blank
+                    "automatic_mode": auto_mode
                 }
             else:
                 self.profiles[url].update({
                     "title": new_title if new_title else "Unknown Title",
                     "author": new_author if new_author else "Unknown Author",
-                    "directory": new_directory,
-                    "opt_in_for_automatic_mode": opt_in_automatic
+                    "directory": new_directory if new_directory else '',
+                    "automatic_mode": auto_mode
                 })
 
             self.update_profile_list()
-            self.save_profiles()
+            if self.logged_in:
+                self.save_preferences()
+            else:
+                self.save_profiles()
             edit_window.accept()
 
         # Form layout for entries
@@ -897,9 +1397,19 @@ class KemonoWebnovelDownloader(QMainWindow):
         
         layout.addLayout(form_layout)
 
-        # Automatic mode checkbox
-        layout.addWidget(QLabel("Automatic mode:"))
-        layout.addWidget(profile_data['opt_in_for_automatic_mode'])
+        # Automatic mode checkbox group
+        auto_mode_group = QButtonGroup(edit_window)
+        auto_mode_layout = QGridLayout()
+        auto_mode_layout.addWidget(QLabel("Automatic mode:"), 0, 0, 1, 4, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        col = 0
+        for i, (key, checkbox) in enumerate(profile_data['automatic_mode_options'].items()):
+            auto_mode_layout.addWidget(checkbox, 1, col)
+            auto_mode_group.addButton(checkbox)
+            col += 1
+            checkbox.toggled.connect(lambda checked, cb=checkbox: [b.setChecked(False) for b in auto_mode_group.buttons() if b != cb] if checked else None)
+
+        layout.addLayout(auto_mode_layout)
 
         # Update button
         update_button = QPushButton("Update")
@@ -918,23 +1428,62 @@ class KemonoWebnovelDownloader(QMainWindow):
         item = selected_items[0]
         url = item.text(2)  # Assuming URL is in the third column (index 2)
         
-        if url in self.profiles:
-            del self.profiles[url]
-            self.update_profile_list()
-            self.save_profiles()
+        if self.logged_in:
+            # Convert the URL to the format needed for favorites API
+            fixed_url = self.fix_link(url)
+            if not fixed_url:
+                QMessageBox.critical(self, "Error", "Invalid or unrecognized URL.")
+                return
+
+            parts = fixed_url.split('/')
+            if len(parts) >= 6 and parts[3] == 'api' and parts[4] == 'v1' and parts[5] in ['patreon', 'fanbox', 'pixiv', 'fantia', 'dlsite', 'gumroad', 'subscribestar']:
+                service = parts[5]
+                if len(parts) >= 8 and parts[6] == 'user':
+                    creator_id = parts[7]
+                    favorites_url = f"https://kemono.su/api/v1/favorites/creator/{service}/{creator_id}"
+                    try:
+                        response = requests.delete(
+                            favorites_url,
+                            headers={'accept': '*/*'},
+                            cookies=self.cookies
+                        )
+                        response.raise_for_status()
+                        # After removing, fetch updated favorites to ensure it's removed
+                        self.profiles = self.load_profiles()
+                        self.update_profile_list()
+                        QMessageBox.information(self, "Success", "Creator removed from favorites.")
+                    except requests.exceptions.RequestException as e:
+                        print(f"Failed to remove from favorites: {e}")
+                        QMessageBox.critical(self, "Error", f"Failed to remove creator from favorites: {e}")
+                else:
+                    QMessageBox.critical(self, "Error", "URL does not specify a user.")
+            else:
+                QMessageBox.critical(self, "Error", "URL does not match expected format for removing from favorites.")
         else:
-            QMessageBox.warning(self, "Warning", "Profile not found.")
+            if url in self.profiles:
+                del self.profiles[url]
+                self.update_profile_list()
+                self.save_profiles()
+            else:
+                QMessageBox.warning(self, "Warning", "Profile not found.")
 
     def update_profile_list(self):
         self.profile_list.clear()  # Clear all items before updating
         
-        for url, details in self.profiles.items():
+        if self.logged_in:
+            sorted_profiles = sorted(self.profiles.items(), key=lambda x: x[1].get('updated', ''), reverse=True)
+        else:
+            # If not logged in, you might want to keep the order as it is or sort by something else if needed
+            sorted_profiles = list(self.profiles.items())
+
+        for url, details in sorted_profiles:
             item = QTreeWidgetItem([details['title'], details['author'], url])
             self.profile_list.addTopLevelItem(item)
         
         # Update button state based on selection
         has_selection = bool(self.profile_list.selectedItems())
         self.download_button.setEnabled(has_selection)
+        self.one_click_download_button.setEnabled(has_selection)
 
     def preview_chapters(self):
         if self.is_fetching:
@@ -951,7 +1500,18 @@ class KemonoWebnovelDownloader(QMainWindow):
         item = selected_items[0]
         url = item.text(2)  # Assuming the URL is in the third column (index 2)
         print(f"Starting fetch for URL: {url}")  # Debug log
-        self.fetch_kemono_chapters(url)
+        
+        # Fetch chapters
+        chapters = self.fetch_kemono_chapters_silent(url)
+        profile = self.profiles.get(url)
+        last_fetched = profile.get("last_fetched", "")
+        
+        # Set the 'is_new' flag for all chapters
+        for chapter in chapters:
+            chapter['is_new'] = chapter["published"] > last_fetched
+        
+        # Use a single shot timer to delay the preview operation, allowing the UI to update
+        QTimer.singleShot(100, lambda: self.preview_chapters_with_data(chapters))
 
     def preview_chapters_with_data(self, chapters):
         try:
@@ -1015,7 +1575,7 @@ class KemonoWebnovelDownloader(QMainWindow):
             # Populate the tree widget
             for chapter in chapters:
                 item = QTreeWidgetItem([chapter['title'], chapter['published']])
-                if chapter.get('is_new'):
+                if chapter.get('is_new', False):
                     item.setBackground(0, QColor(144, 238, 144))  # Highlight new chapters
                 self.tree.addTopLevelItem(item)
             
@@ -1162,7 +1722,7 @@ class KemonoWebnovelDownloader(QMainWindow):
 
     def save_metadata_and_download(self, window, title_entry, author_entry, filename_entry, chapters):
         new_title = title_entry.text()
-        new_author = title_entry.text()
+        new_author = author_entry.text()  # Corrected to use author_entry
         new_filename = filename_entry.text()
 
         # Create the EPUB
@@ -1176,8 +1736,13 @@ class KemonoWebnovelDownloader(QMainWindow):
             QMessageBox.information(self, "Success", f"EPUB created at: {epub_filepath}")
 
         # Update `last_fetched` after creating/sending the EPUB
-        self.profiles[self.current_url]["last_fetched"] = max(chap["published"] for chap in chapters)
-        self.save_profiles()
+        profile = self.profiles[self.current_url]  # Fetch the profile
+        profile["last_fetched"] = max(chap["published"] for chap in chapters)
+        if self.logged_in:
+            profile['AMU'] = profile["last_fetched"]  # Update AMU with the new last_fetched
+            self.save_preferences()
+        else:
+            self.save_profiles()
         window.accept()
 
     def resizeEvent(self, event):
