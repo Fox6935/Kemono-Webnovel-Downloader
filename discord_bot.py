@@ -17,23 +17,19 @@ async def on_ready():
 @client.command()
 async def check(ctx, url: str):
     try:
-        # Fix and validate the URL
         fixed_url = await async_fix_link(url)
         if not fixed_url:
             await ctx.send("Invalid URL. Please provide a valid kemono.su or Patreon URL.")
             return
 
-        # Fetch chapters
-        chapters = await async_fetch_chapters(fixed_url)
+        # Fetch only the most recent chapter
+        chapters = await async_fetch_chapters(fixed_url, 1)
         
         if not chapters:
             await ctx.send("No chapters found at this URL.")
             return
 
-        # Get the most recent post title
-        most_recent_chapter = chapters[0]  # Assuming chapters are sorted with the most recent first
-        title = most_recent_chapter.get('title', 'Untitled')
-        
+        title = chapters[0].get('title', 'Untitled')
         await ctx.send(f"The most recent post title is: **{title}**.")
 
     except Exception as e:
@@ -49,11 +45,11 @@ async def fetch(ctx, url: str, num_chapters: int, *skip_chapters):
             return
 
         # Fetch chapters, handle pagination, and skip specified chapters
-        all_chapters = await async_fetch_chapters(fixed_url)
+        all_chapters = await async_fetch_chapters(fixed_url, num_chapters)
         chapters_to_process = []
         skip_set = set(map(int, skip_chapters[0].split(',')) if skip_chapters else [])
 
-        for i, chapter in enumerate(all_chapters[:num_chapters]):
+        for i, chapter in enumerate(all_chapters):
             if i + 1 not in skip_set:
                 chapters_to_process.append(chapter)
             if len(chapters_to_process) == num_chapters:
@@ -110,11 +106,13 @@ async def async_get_patreon_user_id(url):
             return None
     return None
 
-async def async_fetch_chapters(feed_url):
+async def async_fetch_chapters(feed_url, max_chapters):
     chapters = []
     offset = 0
+    pages_to_fetch = max((max_chapters - 1) // 50 + 1, 1)  # Calculate pages needed based on 50 chapters per page
+    
     async with aiohttp.ClientSession() as session:
-        while True:
+        for _ in range(pages_to_fetch):
             async with session.get(f"{feed_url}?o={offset}") as response:
                 if response.status != 200:
                     break
@@ -123,9 +121,10 @@ async def async_fetch_chapters(feed_url):
                     break
                 chapters.extend(new_chapters)
                 offset += 50
-                if len(new_chapters) < 50:
+                if len(chapters) >= max_chapters:  # Stop fetching if we've got enough chapters
                     break
-    return sorted(chapters, key=lambda x: x.get('published', ''), reverse=True)
+
+    return sorted(chapters[:max_chapters], key=lambda x: x.get('published', ''), reverse=True)
 
 async def async_create_epub(chapters, title, author, profile_url, filename):
     chapters = sorted(chapters, key=lambda x: x['published'])
