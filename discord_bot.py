@@ -129,16 +129,24 @@ intents = discord.Intents.default()
 intents.message_content = True
 client = commands.Bot(command_prefix='!kemono ', intents=intents, help_command=None)
 
+def load_creators_data():
+    try:
+        with open('creators_data.json', 'r') as file:
+            return json.load(file)
+    except FileNotFoundError:
+        print("No creators_data.json file found. Returning empty dict.")
+        return {}
+
 @client.command()
 async def help(ctx):
     embed = Embed(title="Kemono Update Bot Help", color=0x00ff00)
     embed.description = "The Kemono Update Bot keeps you informed about updates from creators on the Kemono platform. It automatically checks for updates every 5 minutes and sends notifications in a specified Discord channel when new posts are detected. Access to commands is restricted to certain roles and channels for security."
 
     # Add fields for each command
-    embed.add_field(name="!kemono check [URL]", value="Fetches and displays a list of chapter titles from a given URL on Kemono. The response is ephemeral and includes a delete option.\n**Usage:** `!kemono check `", inline=False)
-    embed.add_field(name="!kemono fetch [URL] [Number of Chapters] [Skip Chapters]", value="Downloads specified chapters from a Kemono creator's page into an EPUB file. You can skip chapters if needed.\n**Usage:** `!kemono fetch   [chapter_numbers_to_skip]`", inline=False)
-    embed.add_field(name="!kemono add [URL]", value="Adds a creator from the given URL to your favorites list on Kemono. Updates local tracking.\n**Usage:** `!kemono add `", inline=False)
-    embed.add_field(name="!kemono remove [URL]", value="Removes a creator from your favorites list on Kemono based on the provided URL. Updates local tracking.\n**Usage:** `!kemono remove `", inline=False)
+    embed.add_field(name="!kemono check [URL]", value="Fetches and displays a list of chapter titles from a given URL on Kemono. The response is ephemeral and includes a delete option. You can aslo use a creator name instead of a URL if the creator has been added to favorites. If there is a whitespace in the name, enclose the name with quotes.\n**Example:** `!kemono check https://kemono.su/patreon/user/12345`", inline=False)
+    embed.add_field(name="!kemono fetch [URL] [Number of Chapters] [Skip Chapters]", value="Downloads specified chapters from a Kemono creator's page into an EPUB file. You can skip chapters if needed. You can aslo use a creator name instead of a URL if the creator has been added to favorites. If there is a whitespace in the name, enclose the name with quotes. The following example would fetch 30 chapters from the URL, but will skip chapters 2, 11, and 14.\n**Example:** `!kemono fetch https://kemono.su/patreon/user/12345 30 2,11,14`", inline=False)
+    embed.add_field(name="!kemono add [URL]", value="Adds a creator from the given URL to your favorites list on Kemono. Updates local tracking.\n**Example:** `!kemono add https://kemono.su/patreon/user/12345`", inline=False)
+    embed.add_field(name="!kemono remove [URL]", value="Removes a creator from your favorites list on Kemono based on the provided URL. Updates local tracking.\n**Example:** `!kemono remove https://kemono.su/patreon/user/12345`", inline=False)
 
     embed.set_footer(text=f"Help requested - {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC")
 
@@ -162,14 +170,48 @@ async def help(ctx):
     await auto_delete(ctx)
 
 @client.command()
-async def check(ctx, url: str):
+async def check(ctx, input_str: str):
     if not await check_role(ctx):
         return
+    
+    creators_data = load_creators_data()
+    matching_creators = [creator for creator in creators_data.values() if creator['name'].lower() == input_str.lower()]
+
+    if len(matching_creators) == 1:
+        creator = matching_creators[0]
+        url = f"https://kemono.su/api/v1/{creator['service']}/user/{creator['id']}"
+        creator_name = creator['name']  # Use the name from creators_data
+    elif len(matching_creators) > 1:
+        await ctx.send("Multiple creators found with that name. Please use a URL instead.", ephemeral=True, delete_after=10)
+        return
+    else:
+        url = input_str
+    
     try:
         fixed_url = await fix_link(url)
         if not fixed_url:
             await ctx.send("Invalid URL. Please provide a valid kemono.su or Patreon URL.", ephemeral=True, delete_after=10)
             return
+
+        # Parse URL for service and creator_id (only if we didn't use creators_data)
+        if 'creator_name' not in locals():  # Check if we didn't get the name from creators_data
+            parts = fixed_url.split('/')
+            if len(parts) >= 8 and parts[3] == 'api' and parts[4] == 'v1':
+                service = parts[5]
+                creator_id = parts[7]
+                # Fetch creator profile to get name only if needed
+                profile_url = f"https://kemono.su/api/v1/{service}/user/{creator_id}/profile"
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(profile_url) as response:
+                        if response.status == 200:
+                            profile = await response.json()
+                            creator_name = profile.get('name', 'Unknown')
+                        else:
+                            creator_name = "Unknown"
+                            print(f"Failed to fetch creator profile: {response.status}")
+            else:
+                await ctx.send("The URL does not match the expected format for checking chapters.", ephemeral=True, delete_after=10)
+                return
 
         # Fetch all chapters
         chapters = await fetch_chapters(fixed_url, 50)  # Fetches a list of chapters up to 50
@@ -182,7 +224,7 @@ async def check(ctx, url: str):
         chapter_list = "\n".join(f"#{i + 1} {chapter.get('title', 'Untitled')}" for i, chapter in enumerate(chapters))
         
         # Create an embed for formatting
-        embed = Embed(title="Chapter List", description=chapter_list, color=0x00ff00)
+        embed = Embed(title=f"Chapter list for {creator_name}", description=chapter_list, color=0x00ff00)
         
         # Create a delete button
         delete_button = ui.Button(style=ButtonStyle.red, label="Delete")
@@ -208,35 +250,48 @@ async def check(ctx, url: str):
     await auto_delete(ctx)
 
 @client.command()
-async def fetch(ctx, url: str, num_chapters: int, *skip_chapters):
+async def fetch(ctx, input_str: str, num_chapters: int, *skip_chapters):
     if not await check_role(ctx):
         return
+    
+    creators_data = load_creators_data()
+    matching_creators = [creator for creator in creators_data.values() if creator['name'].lower() == input_str.lower()]
+
+    if len(matching_creators) == 1:
+        creator = matching_creators[0]
+        url = f"https://kemono.su/api/v1/{creator['service']}/user/{creator['id']}"
+        creator_name = creator['name']  # Use the name from creators_data
+    elif len(matching_creators) > 1:
+        await ctx.send("Multiple creators found with that name. Please use a URL instead.", delete_after=10)
+        return
+    else:
+        url = input_str
+    
     try:
-        # Fix and validate the URL
         fixed_url = await fix_link(url)
         if not fixed_url:
             await ctx.send("Invalid URL. Please provide a valid kemono.su or Patreon URL.", delete_after=10)
             return
 
-        # Parse URL for service and creator_id
-        parts = fixed_url.split('/')
-        if len(parts) >= 8 and parts[3] == 'api' and parts[4] == 'v1':
-            service = parts[5]
-            creator_id = parts[7]
-        else:
-            await ctx.send("The URL does not match the expected format for fetching chapters.", delete_after=10)
-            return
-
-        # Fetch creator profile to get name
-        profile_url = f"https://kemono.su/api/v1/{service}/user/{creator_id}/profile"
-        async with aiohttp.ClientSession() as session:
-            async with session.get(profile_url) as response:
-                if response.status == 200:
-                    profile = await response.json()
-                    creator_name = profile.get('name', 'Unknown')
-                else:
-                    creator_name = "Unknown"
-                    print(f"Failed to fetch creator profile: {response.status}")
+        # Parse URL for service and creator_id (only if we didn't use creators_data)
+        if 'creator_name' not in locals():  # Check if we didn't get the name from creators_data
+            parts = fixed_url.split('/')
+            if len(parts) >= 8 and parts[3] == 'api' and parts[4] == 'v1':
+                service = parts[5]
+                creator_id = parts[7]
+                # Fetch creator profile to get name only if needed
+                profile_url = f"https://kemono.su/api/v1/{service}/user/{creator_id}/profile"
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(profile_url) as response:
+                        if response.status == 200:
+                            profile = await response.json()
+                            creator_name = profile.get('name', 'Unknown')
+                        else:
+                            creator_name = "Unknown"
+                            print(f"Failed to fetch creator profile: {response.status}")
+            else:
+                await ctx.send("The URL does not match the expected format for fetching chapters.", delete_after=10)
+                return
 
         # Fetch chapters, handle pagination, and skip specified chapters
         all_chapters = await fetch_chapters(fixed_url, num_chapters)
@@ -433,7 +488,11 @@ async def check_for_updates():
                                         new_posts_count = sum(1 for post in posts 
                                                               if post.get('added', '') > previous_data[creator_id]['updated'])
                                         
-                                        content = f"**[{profile['name']}](<{display_url}>)** has been updated with {new_posts_count} new posts."
+                                        # Convert updated timestamp to Unix timestamp for Discord dynamic display
+                                        updated_datetime = datetime.fromisoformat(profile['updated'].replace('Z', '+00:00'))  # Ensure it's in UTC if 'Z' is present
+                                        unix_timestamp = int(updated_datetime.timestamp())
+                                        
+                                        content = f"**[{profile['name']}](<{display_url}>)** has been updated with {new_posts_count} new posts. Updated: <t:{unix_timestamp}:f>"
                                         try:
                                             await channel.send(content)
                                         except discord.errors.HTTPException as e:
