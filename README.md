@@ -21,7 +21,7 @@ pip install PyQt6 requests EbookLib
 3. **Run the script**:
 
 ```bash
-python Kemono_Webnovel_Downloader.py
+python Webnovel_Downloader.py
 ```
 
 ## Usage
