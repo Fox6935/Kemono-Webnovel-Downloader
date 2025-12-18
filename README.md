@@ -37,3 +37,7 @@ python Kemono_Webnovel_Downloader.py
 
 - Python 3.11 or higher
 - `PyQt6`, `requests`, `EbookLib`
+
+## Future
+
+This repo may or may not be updated in the future. This code is provided as-is, without any guarentees or warranty of any kind.
