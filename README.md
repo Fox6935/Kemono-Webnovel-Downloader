@@ -14,15 +14,15 @@ A clean, modern Python GUI application for downloading web novels from **Kemono.
 1. **Install Python 3.11+**
 2. **Install dependencies**:
 
-'''bash
+```bash
 pip install PyQt6 requests EbookLib
-'''
+```
 
 3. **Run the script**:
 
-'''bash
+```bash
 python Kemono_Webnovel_Downloader.py
-'''
+```
 
 ## Usage
 
